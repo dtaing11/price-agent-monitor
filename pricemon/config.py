@@ -19,6 +19,10 @@ DEFAULTS: dict[str, Any] = {
         "max_retries": 3,
         "min_delay_per_domain": 3.0,  # seconds between hits on the same host
         "respect_robots": True,
+        # auto: render with a headless browser only for sites that need it
+        # (Amazon, Target, ...) or when plain HTTP finds no price.
+        # never | auto | always. Needs playwright installed.
+        "browser": "auto",
     },
     "llm": {
         # auto -> claude CLI (your OAuth login) if present, else the API key, else off

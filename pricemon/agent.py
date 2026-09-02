@@ -5,7 +5,8 @@ from __future__ import annotations
 import requests
 
 from . import extract as extract_mod
-from .fetcher import FetchError, fetch
+from . import sites
+from .fetcher import FetchError, browser_is_available, fetch, fetch_rendered
 from .llm import LLM, LLMUnavailable
 from .models import Alert, CheckResult, Extraction, Product, utcnow
 from .money import format_price
@@ -31,8 +32,41 @@ class Agent:
     def scrape(
         self, url: str, product: Product | None = None, use_llm: bool = True
     ) -> tuple[Extraction, list[Extraction]]:
-        """Fetch a page and extract a price, escalating to Claude when needed."""
-        html, final_url = fetch(url, self.cfg["fetch"], session=self.session)
+        """Fetch a page and extract a price, escalating as needed.
+
+        Escalation ladder: plain HTTP -> headless browser (for sites that render
+        prices client-side) -> Claude. Each step costs more, so each only runs
+        when the cheaper one came up short.
+        """
+        mode = str(self.cfg["fetch"].get("browser", "auto")).lower()
+        rule = sites.match(url)
+        render_first = mode == "always" or (
+            mode == "auto"
+            and rule is not None
+            and rule.bot_protection == "high"
+            and browser_is_available()
+        )
+
+        if render_first:
+            try:
+                html, final_url = fetch_rendered(url, self.cfg["fetch"])
+                self.log("  rendered in a headless browser")
+            except FetchError as exc:
+                self.log(f"  browser fetch failed ({exc}); falling back to plain HTTP")
+                html, final_url = fetch(url, self.cfg["fetch"], session=self.session)
+        else:
+            html, final_url = fetch(url, self.cfg["fetch"], session=self.session)
+
+        blocked = sites.looks_blocked(html)
+        if blocked and mode != "never" and not render_first and browser_is_available():
+            self.log(f"  {blocked}; retrying in a headless browser")
+            try:
+                html, final_url = fetch_rendered(url, self.cfg["fetch"])
+                blocked = sites.looks_blocked(html)
+            except FetchError as exc:
+                self.log(f"  browser fetch failed: {exc}")
+        if blocked:
+            raise FetchError(blocked)
 
         best, candidates = extract_mod.extract(
             html,
@@ -40,6 +74,26 @@ class Agent:
             learned_selector=product.learned_selector if product else None,
             url=final_url,
         )
+
+        # Nothing in the HTML? The page may fill prices in with JavaScript.
+        if (
+            not best.ok
+            and not render_first
+            and mode != "never"
+            and browser_is_available()
+        ):
+            self.log("  no price in the raw HTML - re-fetching with a browser")
+            try:
+                html, final_url = fetch_rendered(url, self.cfg["fetch"])
+            except FetchError as exc:
+                self.log(f"  browser fetch failed: {exc}")
+            else:
+                best, candidates = extract_mod.extract(
+                    html,
+                    selector=product.selector if product else None,
+                    learned_selector=product.learned_selector if product else None,
+                    url=final_url,
+                )
 
         needs_help = (not best.ok) or best.confidence < LLM_CONFIDENCE_FLOOR
         if needs_help and use_llm and self.llm.available:
@@ -170,6 +224,7 @@ class Agent:
         ):
             p.learned_selector = ex.selector
 
+        p.title = ex.title or p.title
         p.last_price = ex.price
         p.last_in_stock = ex.in_stock
         p.last_checked = utcnow()

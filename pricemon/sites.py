@@ -63,6 +63,12 @@ RULES: tuple[SiteRule, ...] = (
             "#newBuyBoxPrice",
             "#apex_desktop .a-price .a-offscreen",
             ".a-price[data-a-color='price'] .a-offscreen",
+            # Newer "mars" layout, and a last-resort any-price selector.
+            # a-text-price is Amazon's struck-through list price, so it is
+            # excluded first and only accepted when nothing else exists.
+            "span.a-price:not(.a-text-price) .a-offscreen",
+            ".mars-gen-price .a-offscreen",
+            "span.a-price .a-offscreen",
         ),
         title=("#productTitle", "#title span"),
         out_of_stock=("#outOfStock", "#availability .a-color-price"),

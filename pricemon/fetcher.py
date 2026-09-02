@@ -6,14 +6,19 @@ to earn a 403 and lose your price history.
 
 from __future__ import annotations
 
+import logging
 import random
+import threading
 import time
 from urllib import robotparser
 from urllib.parse import urlparse
 
 import requests
 
+logger = logging.getLogger(__name__)
+
 _last_hit: dict[str, float] = {}
+_throttle_lock = threading.Lock()
 _robots: dict[str, robotparser.RobotFileParser | None] = {}
 
 
@@ -94,13 +99,82 @@ def _robots_allows(url: str, user_agent: str, timeout: float) -> bool:
 
 
 def _throttle(url: str, min_delay: float) -> None:
+    """Space out requests per host - safe to call from several threads."""
     host = _host(url)
-    last = _last_hit.get(host)
-    if last is not None:
-        wait = min_delay + random.uniform(0, min_delay * 0.3) - (time.time() - last)
-        if wait > 0:
-            time.sleep(wait)
-    _last_hit[host] = time.time()
+    with _throttle_lock:
+        last = _last_hit.get(host)
+        wait = 0.0
+        if last is not None:
+            wait = min_delay + random.uniform(0, min_delay * 0.3) - (time.time() - last)
+        # Reserve this host's slot before releasing the lock so concurrent
+        # callers queue behind us instead of all firing at once.
+        _last_hit[host] = time.time() + max(wait, 0.0)
+    if wait > 0:
+        time.sleep(wait)
+
+
+class BrowserUnavailable(FetchError):
+    pass
+
+
+def browser_is_available() -> bool:
+    try:
+        import playwright  # type: ignore[import-not-found]  # noqa: F401
+
+        return True
+    except ImportError:
+        return False
+
+
+def fetch_rendered(url: str, cfg: dict) -> tuple[str, str]:
+    """Fetch a page through a real headless browser.
+
+    Some retailers - Amazon and Target most notably - send an empty price
+    skeleton to anything that is not a browser and fill it in with JavaScript.
+    No amount of HTML parsing recovers a number that was never sent, so those
+    sites get rendered properly instead.
+
+    Needs:  pip install playwright && python3 -m playwright install chromium
+    """
+    try:
+        from playwright.sync_api import (
+            sync_playwright,  # type: ignore[import-not-found]
+        )
+    except ImportError as exc:
+        raise BrowserUnavailable(
+            "browser mode needs Playwright: pip install playwright && "
+            "python3 -m playwright install chromium"
+        ) from exc
+
+    _throttle(url, float(cfg.get("min_delay_per_domain", 3.0)))
+    timeout_ms = int(float(cfg.get("timeout", 25)) * 1000)
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(
+            args=["--disable-blink-features=AutomationControlled", "--no-sandbox"]
+        )
+        try:
+            context = browser.new_context(
+                user_agent=cfg["user_agent"],
+                locale="en-US",
+                viewport={"width": 1366, "height": 900},
+            )
+            page = context.new_page()
+            page.goto(url, timeout=timeout_ms, wait_until="domcontentloaded")
+            # Prices arrive after hydration; wait for one, but never hang on it.
+            try:
+                page.wait_for_selector(
+                    "[class*=price], [id*=price], [data-testid*=price]",
+                    timeout=min(timeout_ms, 8000),
+                )
+            except Exception as exc:  # noqa: BLE001
+                # No price element appeared - the page may genuinely not have
+                # one. Carry on and let extraction decide.
+                logger.debug("no price selector appeared on %s: %s", url, exc)
+            page.wait_for_timeout(400)
+            html, final = page.content(), page.url
+        finally:
+            browser.close()
+    return html, final
 
 
 def fetch(
