@@ -5,44 +5,61 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Price Monitor</title>
 <link rel="stylesheet" href="/static/app.css">
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>📉</text></svg>">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect width='64' height='64' rx='14' fill='%2315161a'/><polyline points='12,42 26,30 36,36 52,18' fill='none' stroke='%235cbd93' stroke-width='6' stroke-linecap='round' stroke-linejoin='round'/></svg>">
 </head>
 <body>
 <div class="app">
   <header class="titlebar">
-    <div class="brand"><span class="dot"></span> Price Monitor</div>
+    <div class="brand">
+      <svg width="18" height="18" viewBox="0 0 64 64" aria-hidden="true">
+        <polyline points="8,44 26,26 38,34 56,14" fill="none" stroke="currentColor"
+                  stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+      Price Monitor
+    </div>
     <div class="spacer"></div>
-    <div class="status" id="status"></div>
-    <button class="btn" id="btn-theme" title="Toggle theme">◐</button>
-    <button class="btn" id="btn-check">Check all</button>
-    <button class="btn primary" id="btn-add">+ Track product</button>
+    <div class="headline" id="headline"></div>
+    <button class="btn quiet icon-btn" id="btn-theme" title="Switch theme" aria-label="Switch theme">◐</button>
+    <button class="btn" id="btn-check">Check now</button>
+    <button class="btn primary" id="btn-add">Track a product</button>
   </header>
 
   <div class="body">
     <main class="main">
-      <div class="toolbar">
-        <input class="search" id="search" type="text" placeholder="Filter by name, retailer or URL…">
-        <div class="seg" id="filters">
-          <button data-filter="all" class="on">All</button>
-          <button data-filter="hit">Target hit</button>
-          <button data-filter="drops">Dropped</button>
-          <button data-filter="stock">Out of stock</button>
-          <button data-filter="issues">Issues</button>
+      <div class="wrap">
+        <div class="toolbar">
+          <div class="chips" id="filters">
+            <button class="chip on" data-filter="all">Everything</button>
+            <button class="chip" data-filter="hit">At target</button>
+            <button class="chip" data-filter="drops">Fell</button>
+            <button class="chip" data-filter="stock">Out of stock</button>
+            <button class="chip" data-filter="issues">Needs a look</button>
+          </div>
+          <input class="search" id="search" type="text" placeholder="Filter…" aria-label="Filter products">
+          <select class="sort" id="sort" aria-label="Sort">
+            <option value="change">Biggest fall first</option>
+            <option value="name">Name</option>
+            <option value="price">Price</option>
+            <option value="checked">Last checked</option>
+          </select>
         </div>
-        <select id="sort" style="width:auto">
-          <option value="name">Sort: name</option>
-          <option value="change">Sort: biggest drop</option>
-          <option value="price">Sort: price</option>
-          <option value="checked">Sort: last checked</option>
-        </select>
-      </div>
 
-      <div class="summary" id="summary"></div>
-      <div class="grid" id="grid"></div>
-      <div class="empty" id="empty" hidden>
-        <h3>Nothing tracked yet</h3>
-        <p>Paste a product URL from Amazon, Walmart, IKEA, eBay — or any shop —<br>and the agent will find the price and watch it.</p>
-        <button class="btn primary" id="btn-add-empty">+ Track your first product</button>
+        <div class="ledger" id="ledger-box">
+          <div class="ledger-head">
+            <div></div>
+            <div>Product</div>
+            <div class="ta-r">Price</div>
+            <div class="h-gauge">Low → high</div>
+            <div class="h-spark ta-r">History</div>
+          </div>
+          <div id="rows"></div>
+        </div>
+
+        <div class="blank" id="blank" hidden>
+          <h3>Nothing tracked yet</h3>
+          <p>Name a product, or paste a link from Amazon, Walmart, IKEA, eBay or any other shop.</p>
+          <button class="btn primary" id="btn-add-blank">Track a product</button>
+        </div>
       </div>
     </main>
 
@@ -54,47 +71,47 @@
   <form method="dialog" id="form-add">
     <div class="dlg-head">
       <h3>Track a product</h3>
-      <p>The agent fetches the page, finds the price, and learns how to read it again.</p>
+      <p>Name it and the agent finds the page, or paste a link you already have.</p>
     </div>
     <div class="dlg-body">
-      <div class="seg" id="add-mode" style="margin:12px 0 4px">
-        <button type="button" data-mode="name" class="on">By product name</button>
-        <button type="button" data-mode="url">By URL</button>
+      <div class="chips" id="add-mode" style="margin:14px 0 2px">
+        <button type="button" class="chip on" data-mode="name">By name</button>
+        <button type="button" class="chip" data-mode="url">By link</button>
       </div>
 
       <div id="mode-name">
-        <label for="f-query">Product name</label>
+        <label for="f-query">What are you looking for?</label>
         <div style="display:flex; gap:8px">
-          <input type="text" id="f-query" placeholder="e.g. sony wh-1000xm5 headphones" style="flex:1">
+          <input type="text" id="f-query" placeholder="sony wh-1000xm5 headphones" style="flex:1">
           <button type="button" class="btn" id="btn-search">Search</button>
         </div>
-        <div class="hint">Searches the web, opens each candidate, reads the real price, and asks Claude which one is actually your product.</div>
-        <div id="results" class="alertlist" style="margin-top:12px"></div>
+        <div class="hint">Opens each candidate, reads the real price, and asks Claude which one is the product you meant.</div>
+        <div class="results" id="results" hidden></div>
       </div>
 
       <div id="mode-url" hidden>
-        <label for="f-url">Product URL</label>
+        <label for="f-url">Product link</label>
         <input type="url" id="f-url" placeholder="https://www.amazon.com/dp/B0…">
-        <label for="f-selector">CSS selector <span style="color:var(--faint)">(optional — only if the wrong number is picked)</span></label>
-        <input type="text" id="f-selector" placeholder="span.price  ·  meta[itemprop=price]@content">
-        <div class="hint" id="add-hint">Auto-detection tries the retailer's own markup, schema.org data, embedded JSON, then Claude.</div>
+        <label for="f-selector">CSS selector <span style="color:var(--ink-3)">— only if the wrong number gets picked</span></label>
+        <input type="text" id="f-selector" placeholder="span.price   ·   meta[itemprop=price]@content">
+        <div class="hint">Otherwise the price is found from the retailer's markup, schema.org data, embedded JSON, then Claude.</div>
       </div>
 
       <div class="row2">
         <div>
-          <label for="f-name">Name <span style="color:var(--faint)">(optional)</span></label>
-          <input type="text" id="f-name" placeholder="from the page title">
+          <label for="f-name">Short name <span style="color:var(--ink-3)">— optional</span></label>
+          <input type="text" id="f-name" placeholder="taken from the page">
         </div>
         <div>
-          <label for="f-target">Alert me at or below</label>
-          <input type="number" id="f-target" step="0.01" min="0" placeholder="e.g. 49.99">
+          <label for="f-target">Tell me at or below</label>
+          <input type="number" id="f-target" step="0.01" min="0" placeholder="49.99">
         </div>
       </div>
       <div class="err" id="add-err" hidden></div>
     </div>
     <div class="dlg-foot">
-      <button class="btn ghost" value="cancel" formnovalidate>Cancel</button>
-      <button class="btn primary" id="btn-add-go" value="add">Track it</button>
+      <button class="btn quiet" value="cancel" formnovalidate>Cancel</button>
+      <button class="btn primary" id="btn-add-go" value="add">Start tracking</button>
     </div>
   </form>
 </dialog>

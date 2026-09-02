@@ -1,171 +1,185 @@
 /* Price Monitor — desktop UI.
-   No framework and no CDN: the app has to start on a machine with nothing
-   installed but Python. Charts are hand-drawn SVG so they stay crisp and
-   themeable without a charting library. */
+   No framework, no CDN: this has to start on a machine with nothing installed
+   but Python. Charts and gauges are hand-drawn SVG/CSS. */
 
 const state = {
   products: [], alerts: [], job: {}, llm: "", sites: [],
-  selected: null, filter: "all", sort: "name", query: "", tab: "detail",
+  selected: null, filter: "all", sort: "change", query: "", tab: "detail",
 };
 
 const $ = (sel) => document.querySelector(sel);
 const el = (tag, props = {}, kids = []) => {
   const node = Object.assign(document.createElement(tag), props);
-  for (const k of [].concat(kids)) node.append(k);
+  for (const k of [].concat(kids)) if (k != null) node.append(k);
   return node;
 };
 
 /* ---------------- formatting ---------------- */
 const SYMBOLS = { USD: "$", EUR: "€", GBP: "£", JPY: "¥", INR: "₹", CAD: "$", AUD: "$" };
-function money(amount, currency) {
+function money(amount, currency, decimals = 2) {
   if (amount === null || amount === undefined) return "—";
+  const n = amount.toLocaleString(undefined, { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
   const sym = SYMBOLS[currency];
-  const n = amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   return sym ? `${sym}${n}` : currency ? `${n} ${currency}` : n;
 }
 function when(iso) {
   if (!iso) return "never";
-  const then = new Date(iso), mins = (Date.now() - then) / 60000;
+  const mins = (Date.now() - new Date(iso)) / 60000;
   if (mins < 1) return "just now";
   if (mins < 60) return `${Math.round(mins)}m ago`;
   if (mins < 48 * 60) return `${Math.round(mins / 60)}h ago`;
-  return then.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  return new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
-const pct = (v) => (v === null || v === undefined ? "" : `${v > 0 ? "+" : ""}${v.toFixed(1)}%`);
+const series = (p) => p.history.filter((h) => h.price !== null);
+
+/* ---------------- the gauge: how close is this to being worth buying ---------------- */
+function gauge(p) {
+  const box = el("div", { className: "gauge" + (p.target_hit ? " hit" : "") });
+  if (p.last_price == null || p.low == null || p.high == null) {
+    box.append(el("div", { className: "none", textContent: "no data" }));
+    return box;
+  }
+  let lo = p.low, hi = p.high;
+  if (p.target_price != null) { lo = Math.min(lo, p.target_price); hi = Math.max(hi, p.target_price); }
+  const span = hi - lo;
+
+  if (span <= 0) {
+    // One price, seen once: a full-width bar would imply a range that does not
+    // exist yet. Say so instead.
+    box.append(el("div", { className: "track" }),
+               el("div", { className: "dot", style: "left:50%" }),
+               el("div", { className: "flat", textContent: "no range yet" }));
+    return box;
+  }
+
+  const at = (v) => ((v - lo) / span) * 100;
+  const pos = at(p.last_price);
+  box.title = p.target_price != null
+    ? `Now ${money(p.last_price, p.currency)} · target ${money(p.target_price, p.currency)} · seen between ${money(lo, p.currency)} and ${money(hi, p.currency)}`
+    : `Now ${money(p.last_price, p.currency)} · seen between ${money(lo, p.currency)} and ${money(hi, p.currency)}`;
+
+  box.append(el("div", { className: "track" }));
+  box.append(el("div", { className: "fill", style: `width:${pos.toFixed(1)}%` }));
+  if (p.target_price != null) {
+    box.append(el("div", { className: "notch", style: `left:${at(p.target_price).toFixed(1)}%`, title: `target ${money(p.target_price, p.currency)}` }));
+  }
+  box.append(el("div", { className: "dot", style: `left:${pos.toFixed(1)}%` }));
+  const ends = el("div", { className: "ends" });
+  ends.append(el("span", { textContent: money(lo, p.currency, 0) }), el("span", { textContent: money(hi, p.currency, 0) }));
+  box.append(ends);
+  return box;
+}
 
 /* ---------------- charts ---------------- */
-function series(product) {
-  return product.history.filter((p) => p.price !== null);
-}
-
-function sparkline(product, w = 300, h = 46) {
-  const pts = series(product);
+function sparkline(p, w = 96, h = 30) {
+  const pts = series(p);
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-  svg.setAttribute("class", "spark");
   svg.setAttribute("viewBox", `0 0 ${w} ${h}`);
   svg.setAttribute("preserveAspectRatio", "none");
+  svg.setAttribute("class", "cell-spark");
+  svg.setAttribute("aria-hidden", "true");
   if (pts.length < 2) return svg;
 
-  const prices = pts.map((p) => p.price);
+  const prices = pts.map((x) => x.price);
   let lo = Math.min(...prices), hi = Math.max(...prices);
-  if (product.target_price != null) { lo = Math.min(lo, product.target_price); hi = Math.max(hi, product.target_price); }
-  // Breathing room, so a flat series sits mid-height instead of filling the box.
-  const margin = (hi - lo) * 0.25 || Math.max(hi * 0.04, 0.5);
+  const margin = (hi - lo) * 0.28 || Math.max(hi * 0.03, 0.5);
   lo -= margin; hi += margin;
-  const span = hi - lo || 1, pad = 5;
-  const x = (i) => (i / (pts.length - 1)) * w;
-  const y = (v) => h - pad - ((v - lo) / span) * (h - 2 * pad);
-  const trend = prices.at(-1) < prices[0] ? "down" : prices.at(-1) > prices[0] ? "up" : "flat";
-  const stroke = trend === "down" ? "var(--down)" : trend === "up" ? "var(--up)" : "var(--faint)";
-
-  const line = prices.map((v, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(" ");
-  const area = `M0,${h} ` + prices.map((v, i) => `L${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(" ") + ` L${w},${h} Z`;
+  const span = hi - lo || 1, pad = 4;
+  const X = (i) => (i / (prices.length - 1)) * w;
+  const Y = (v) => h - pad - ((v - lo) / span) * (h - 2 * pad);
+  const trend = prices.at(-1) < prices[0] ? "drop" : prices.at(-1) > prices[0] ? "rise" : "ink-3";
+  const stroke = `var(--${trend})`;
   svg.innerHTML =
-    `<path d="${area}" fill="${stroke}" opacity=".09"/>` +
-    (product.target_price != null
-      ? `<line x1="0" y1="${y(product.target_price).toFixed(1)}" x2="${w}" y2="${y(product.target_price).toFixed(1)}"
-           stroke="var(--down)" stroke-width="1" stroke-dasharray="3 4" opacity=".65"/>` : "") +
-    `<path d="${line}" fill="none" stroke="${stroke}" stroke-width="2"
-       stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/>` +
-    `<circle cx="${x(prices.length - 1).toFixed(1)}" cy="${y(prices.at(-1)).toFixed(1)}" r="2.6" fill="${stroke}"/>`;
+    `<path d="${prices.map((v, i) => `${i ? "L" : "M"}${X(i).toFixed(1)},${Y(v).toFixed(1)}`).join(" ")}"
+       fill="none" stroke="${stroke}" stroke-width="1.5" stroke-linejoin="round"
+       vector-effect="non-scaling-stroke"/>` +
+    `<circle cx="${X(prices.length - 1).toFixed(1)}" cy="${Y(prices.at(-1)).toFixed(1)}" r="1.9" fill="${stroke}"/>`;
   return svg;
 }
 
-/* Full interactive chart with axes, target line and a hover readout. */
-function bigChart(product) {
-  const pts = series(product);
+function bigChart(p) {
+  const pts = series(p);
   const wrap = el("div", { className: "chart-wrap" });
   if (pts.length < 2) {
     wrap.append(el("p", { className: "hint", textContent:
-      pts.length === 1 ? "One data point so far — the line appears after the next check." : "No price history yet." }));
+      pts.length === 1 ? "One reading so far. The line starts after the next check." : "No price readings yet." }));
     return wrap;
   }
-
-  const W = 340, H = 170, padL = 42, padR = 8, padT = 12, padB = 22;
-  const prices = pts.map((p) => p.price);
+  const W = 336, H = 150, padL = 44, padR = 10, padT = 12, padB = 20;
+  const prices = pts.map((x) => x.price);
   let lo = Math.min(...prices), hi = Math.max(...prices);
-  if (product.target_price != null) { lo = Math.min(lo, product.target_price); hi = Math.max(hi, product.target_price); }
-  const margin = (hi - lo) * 0.12 || Math.max(hi * 0.05, 1);
+  if (p.target_price != null) { lo = Math.min(lo, p.target_price); hi = Math.max(hi, p.target_price); }
+  const margin = (hi - lo) * 0.14 || Math.max(hi * 0.04, 1);
   lo -= margin; hi += margin;
   const span = hi - lo || 1;
-  const times = pts.map((p) => new Date(p.ts).getTime());
-  const t0 = times[0], t1 = times.at(-1), tspan = t1 - t0 || 1;
-  const x = (t) => padL + ((t - t0) / tspan) * (W - padL - padR);
-  const y = (v) => padT + (1 - (v - lo) / span) * (H - padT - padB);
+  const times = pts.map((x) => new Date(x.ts).getTime());
+  const t0 = times[0], tspan = (times.at(-1) - t0) || 1;
+  const X = (t) => padL + ((t - t0) / tspan) * (W - padL - padR);
+  const Y = (v) => padT + (1 - (v - lo) / span) * (H - padT - padB);
+  const trend = prices.at(-1) < prices[0] ? "drop" : prices.at(-1) > prices[0] ? "rise" : "ink-3";
+  const stroke = `var(--${trend})`;
 
-  const trend = prices.at(-1) < prices[0] ? "down" : prices.at(-1) > prices[0] ? "up" : "flat";
-  const stroke = trend === "down" ? "var(--down)" : trend === "up" ? "var(--up)" : "var(--faint)";
-  const line = pts.map((p, i) => `${i ? "L" : "M"}${x(times[i]).toFixed(1)},${y(p.price).toFixed(1)}`).join(" ");
-  const area = `M${padL},${H - padB} ` + pts.map((p, i) => `L${x(times[i]).toFixed(1)},${y(p.price).toFixed(1)}`).join(" ") + ` L${(W - padR)},${H - padB} Z`;
+  const grid = [lo + span * 0.1, lo + span * 0.5, hi - span * 0.1].map((v) =>
+    `<line x1="${padL}" x2="${W - padR}" y1="${Y(v).toFixed(1)}" y2="${Y(v).toFixed(1)}" stroke="var(--rule)"/>
+     <text x="${padL - 7}" y="${(Y(v) + 3).toFixed(1)}" text-anchor="end" font-size="8.5"
+       font-family="var(--mono)" fill="var(--ink-3)">${money(v, p.currency, 0)}</text>`).join("");
 
-  const ticks = [lo + span * 0.08, lo + span / 2, hi - span * 0.08];
-  const gridLines = ticks.map((v) =>
-    `<line x1="${padL}" x2="${W - padR}" y1="${y(v).toFixed(1)}" y2="${y(v).toFixed(1)}" stroke="var(--line)" stroke-width="1"/>
-     <text x="${padL - 6}" y="${(y(v) + 3.5).toFixed(1)}" text-anchor="end" font-size="9" fill="var(--faint)">${money(v, product.currency)}</text>`).join("");
+  const target = p.target_price == null ? "" :
+    `<line x1="${padL}" x2="${W - padR}" y1="${Y(p.target_price).toFixed(1)}" y2="${Y(p.target_price).toFixed(1)}"
+       stroke="var(--drop)" stroke-dasharray="3 3"/>
+     <text x="${W - padR}" y="${(Y(p.target_price) - 4).toFixed(1)}" text-anchor="end" font-size="8.5"
+       font-family="var(--mono)" fill="var(--drop)">TARGET</text>`;
 
-  const targetLine = product.target_price != null
-    ? `<line x1="${padL}" x2="${W - padR}" y1="${y(product.target_price).toFixed(1)}" y2="${y(product.target_price).toFixed(1)}"
-         stroke="var(--down)" stroke-width="1.2" stroke-dasharray="4 4"/>
-       <text x="${W - padR}" y="${(y(product.target_price) - 4).toFixed(1)}" text-anchor="end" font-size="9" fill="var(--down)">target</text>` : "";
+  const line = pts.map((x, i) => `${i ? "L" : "M"}${X(times[i]).toFixed(1)},${Y(x.price).toFixed(1)}`).join(" ");
+  const day = (t) => new Date(t).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 
-  const minI = prices.indexOf(Math.min(...prices));
-  const markers =
-    `<circle cx="${x(times[minI]).toFixed(1)}" cy="${y(prices[minI]).toFixed(1)}" r="3" fill="var(--down)"/>` +
-    `<circle cx="${x(times.at(-1)).toFixed(1)}" cy="${y(prices.at(-1)).toFixed(1)}" r="3.2" fill="${stroke}"/>`;
-
-  const dateLabel = (t) => new Date(t).toLocaleDateString(undefined, { month: "short", day: "numeric" });
-  const svg = `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="price history">
-    ${gridLines}
-    <path d="${area}" fill="${stroke}" opacity=".10"/>
-    ${targetLine}
-    <path d="${line}" fill="none" stroke="${stroke}" stroke-width="1.8" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>
-    ${markers}
-    <text x="${padL}" y="${H - 6}" font-size="9" fill="var(--faint)">${dateLabel(t0)}</text>
-    <text x="${W - padR}" y="${H - 6}" text-anchor="end" font-size="9" fill="var(--faint)">${dateLabel(t1)}</text>
-    <line id="cross" x1="0" x2="0" y1="${padT}" y2="${H - padB}" stroke="var(--line-strong)" stroke-width="1" opacity="0"/>
-    <circle id="cursor" r="3.5" fill="var(--panel)" stroke="${stroke}" stroke-width="2" opacity="0"/>
-    <rect x="${padL}" y="${padT}" width="${W - padL - padR}" height="${H - padT - padB}" fill="transparent" id="hit"/>
+  wrap.innerHTML = `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Price history">
+    ${grid}${target}
+    <path d="${line}" fill="none" stroke="${stroke}" stroke-width="1.6"
+      stroke-linejoin="round" vector-effect="non-scaling-stroke"/>
+    <circle cx="${X(times.at(-1)).toFixed(1)}" cy="${Y(prices.at(-1)).toFixed(1)}" r="2.6" fill="${stroke}"/>
+    <text x="${padL}" y="${H - 5}" font-size="8.5" font-family="var(--mono)" fill="var(--ink-3)">${day(t0)}</text>
+    <text x="${W - padR}" y="${H - 5}" text-anchor="end" font-size="8.5" font-family="var(--mono)"
+      fill="var(--ink-3)">${day(times.at(-1))}</text>
+    <line id="cross" y1="${padT}" y2="${H - padB}" stroke="var(--rule-2)" opacity="0"/>
+    <circle id="cursor" r="3" fill="var(--surface)" stroke="${stroke}" stroke-width="1.6" opacity="0"/>
   </svg>`;
-  wrap.innerHTML = svg;
   const tip = el("div", { className: "tip" });
   wrap.append(tip);
 
-  const svgNode = wrap.querySelector("svg");
-  const cross = wrap.querySelector("#cross"), cursor = wrap.querySelector("#cursor");
-  svgNode.addEventListener("pointermove", (ev) => {
-    const box = svgNode.getBoundingClientRect();
+  const svg = wrap.querySelector("svg"), cross = wrap.querySelector("#cross"), cursor = wrap.querySelector("#cursor");
+  svg.addEventListener("pointermove", (ev) => {
+    const box = svg.getBoundingClientRect();
     const vx = ((ev.clientX - box.left) / box.width) * W;
     let best = 0, bestD = Infinity;
-    times.forEach((t, i) => { const d = Math.abs(x(t) - vx); if (d < bestD) { bestD = d; best = i; } });
-    const p = pts[best], px = x(times[best]), py = y(p.price);
-    cross.setAttribute("x1", px); cross.setAttribute("x2", px); cross.setAttribute("opacity", ".9");
+    times.forEach((t, i) => { const d = Math.abs(X(t) - vx); if (d < bestD) { bestD = d; best = i; } });
+    const px = X(times[best]), py = Y(pts[best].price);
+    cross.setAttribute("x1", px); cross.setAttribute("x2", px); cross.setAttribute("opacity", "1");
     cursor.setAttribute("cx", px); cursor.setAttribute("cy", py); cursor.setAttribute("opacity", "1");
-    tip.textContent = `${money(p.price, product.currency)} · ${new Date(p.ts).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}`;
+    tip.textContent = `${money(pts[best].price, p.currency)}  ${new Date(pts[best].ts).toLocaleDateString(undefined, { month: "short", day: "numeric" })}`;
     tip.style.opacity = "1";
-    tip.style.left = `${Math.min(Math.max((px / W) * box.width - 60, 0), box.width - 130)}px`;
-    tip.style.top = `${(py / H) * box.height - 34}px`;
+    tip.style.left = `${Math.min(Math.max((px / W) * box.width - 52, 0), box.width - 108)}px`;
+    tip.style.top = `${(py / H) * box.height - 30}px`;
   });
-  svgNode.addEventListener("pointerleave", () => {
+  svg.addEventListener("pointerleave", () => {
     tip.style.opacity = "0"; cross.setAttribute("opacity", "0"); cursor.setAttribute("opacity", "0");
   });
   return wrap;
 }
 
-/* ---------------- rendering ---------------- */
-function visibleProducts() {
+/* ---------------- ledger ---------------- */
+function visible() {
   const q = state.query.trim().toLowerCase();
-  let list = state.products.filter((p) => {
-    if (q && !(`${p.name} ${p.title || ""} ${p.retailer} ${p.url}`.toLowerCase().includes(q))) return false;
-    switch (state.filter) {
-      case "hit": return p.target_hit;
-      case "drops": return (p.change_pct ?? 0) < -0.01;
-      case "stock": return p.last_in_stock === false;
-      case "issues": return p.fail_count > 0 || p.last_price === null;
-      default: return true;
-    }
+  const list = state.products.filter((p) => {
+    if (q && !`${p.name} ${p.title || ""} ${p.retailer} ${p.url}`.toLowerCase().includes(q)) return false;
+    if (state.filter === "hit") return p.target_hit;
+    if (state.filter === "drops") return (p.change_pct ?? 0) < -0.01;
+    if (state.filter === "stock") return p.last_in_stock === false;
+    if (state.filter === "issues") return p.fail_count > 0 || p.last_price === null;
+    return true;
   });
   const by = {
-    name: (a, b) => a.name.localeCompare(b.name),
+    name: (a, b) => (a.title || a.name).localeCompare(b.title || b.name),
     change: (a, b) => (a.change_pct ?? 0) - (b.change_pct ?? 0),
     price: (a, b) => (a.last_price ?? 1e15) - (b.last_price ?? 1e15),
     checked: (a, b) => (b.last_checked || "").localeCompare(a.last_checked || ""),
@@ -173,220 +187,201 @@ function visibleProducts() {
   return list.sort(by);
 }
 
-function renderSummary() {
-  const ps = state.products;
-  const tracked = ps.length;
-  const hits = ps.filter((p) => p.target_hit).length;
-  const dropped = ps.filter((p) => (p.change_pct ?? 0) < -0.01).length;
-  const issues = ps.filter((p) => p.fail_count > 0).length;
-  const saved = ps.reduce((sum, p) => {
-    const pts = series(p);
-    return pts.length >= 2 ? sum + Math.max(0, pts[0].price - pts.at(-1).price) : sum;
-  }, 0);
-  const cur = ps.find((p) => p.currency)?.currency;
-
-  const box = $("#summary");
-  box.innerHTML = "";
-  const stat = (k, v, cls = "") => {
-    const n = el("div", { className: "stat" });
-    n.append(el("div", { className: "k", textContent: k }), el("div", { className: `v ${cls}`, textContent: v }));
-    return n;
-  };
-  box.append(
-    stat("Tracked", String(tracked)),
-    stat("At or below target", String(hits), hits ? "good" : ""),
-    stat("Price dropped", String(dropped), dropped ? "good" : ""),
-    stat("Total drop", money(saved, cur), saved > 0 ? "good" : ""),
-    stat("Needs attention", String(issues), issues ? "bad" : ""),
-  );
+function thumb(p) {
+  if (p.image) {
+    const img = el("img", { className: "thumb", src: p.image, alt: "", loading: "lazy" });
+    img.onerror = () => img.replaceWith(monogram(p));
+    return img;
+  }
+  return monogram(p);
 }
+const monogram = (p) => el("div", { className: "thumb-fallback", textContent: (p.title || p.name).trim()[0].toUpperCase() });
 
-function card(p) {
-  const node = el("div", { className: "card" + (state.selected === p.name ? " sel" : "") + (p.active ? "" : " paused") });
-  node.onclick = () => { state.selected = p.name; state.tab = "detail"; render(); };
+function row(p) {
+  const node = el("div", {
+    className: "row" + (state.selected === p.name ? " sel" : "") + (p.target_hit ? " hit" : "") + (p.active ? "" : " paused"),
+    tabIndex: 0, role: "button",
+  });
+  const open = () => { state.selected = p.name; state.tab = "detail"; render(); };
+  node.onclick = open;
+  node.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); } };
 
-  const delta = p.change_pct;
-  const dcls = delta == null ? "flat" : delta < -0.01 ? "down" : delta > 0.01 ? "up" : "flat";
-  const arrow = delta == null ? "" : delta < -0.01 ? "▼ " : delta > 0.01 ? "▲ " : "→ ";
+  const who = el("div", { className: "who" });
+  who.append(el("div", { className: "name", textContent: p.title || p.name, title: p.title || p.name }));
+  const sub = el("div", { className: "sub" });
+  sub.append(el("span", { textContent: p.retailer }), el("span", { textContent: when(p.last_checked) }));
+  if (p.last_in_stock === false) sub.append(el("span", { className: "tag oos", textContent: "out of stock" }));
+  if (p.target_hit) sub.append(el("span", { className: "tag hit", textContent: "at target" }));
+  if (p.fail_count > 0) sub.append(el("span", { className: "tag", textContent: `${p.fail_count} failed` }));
+  if (!p.active) sub.append(el("span", { className: "tag", textContent: "paused" }));
+  who.append(sub);
 
-  node.append(
-    el("div", { className: "retailer", textContent: p.retailer }),
-    el("h3", { textContent: p.title || p.name }),
-  );
-  const row = el("div", { className: "row" });
-  row.append(
-    el("div", { className: "price", textContent: money(p.last_price, p.currency) }),
-    el("div", { className: `delta ${dcls}`, textContent: delta == null ? "" : `${arrow}${Math.abs(delta).toFixed(1)}%` }),
-  );
-  node.append(row);
+  const price = el("div", { className: "cell-price" });
+  price.append(el("div", { className: "now", textContent: money(p.last_price, p.currency) }));
+  const d = p.change_pct;
+  const dcls = d == null ? "" : d < -0.01 ? "down" : d > 0.01 ? "up" : "";
+  const dtxt = d == null ? "no history" : d < -0.01 ? `▼ ${Math.abs(d).toFixed(1)}%` : d > 0.01 ? `▲ ${d.toFixed(1)}%` : "unchanged";
+  price.append(el("div", { className: `chg ${dcls}`, textContent: dtxt }));
 
-  const meta = el("div", { className: "meta" });
-  if (p.target_hit) meta.append(el("span", { className: "pill hit", textContent: `🎯 target ${money(p.target_price, p.currency)}` }));
-  else if (p.target_price != null) meta.append(el("span", { className: "pill", textContent: `target ${money(p.target_price, p.currency)}` }));
-  if (p.last_in_stock === false) meta.append(el("span", { className: "pill oos", textContent: "out of stock" }));
-  if (p.fail_count > 0) meta.append(el("span", { className: "pill err", textContent: `${p.fail_count} failed check${p.fail_count > 1 ? "s" : ""}` }));
-  if (!p.active) meta.append(el("span", { className: "pill", textContent: "paused" }));
-  meta.append(el("span", { className: "pill", textContent: when(p.last_checked) }));
-  node.append(meta, sparkline(p));
+  node.append(thumb(p), who, price, el("div", { className: "cell-gauge" }, [gauge(p)]), el("div", { className: "cell-spark" }, [sparkline(p)]));
   return node;
 }
 
-function renderGrid() {
-  const grid = $("#grid"), list = visibleProducts();
-  grid.innerHTML = "";
-  $("#empty").hidden = state.products.length !== 0;
-  list.forEach((p) => grid.append(card(p)));
+function renderLedger() {
+  const box = $("#rows"), list = visible();
+  box.innerHTML = "";
+  $("#blank").hidden = state.products.length !== 0;
+  $("#ledger-box").hidden = state.products.length === 0;
+  list.forEach((p) => box.append(row(p)));
   if (state.products.length && !list.length) {
-    grid.append(el("p", { className: "hint", textContent: "Nothing matches that filter." }));
+    box.append(el("div", { style: "padding:26px; text-align:center; color:var(--ink-3); font-size:13px",
+                           textContent: "Nothing matches that filter." }));
   }
 }
 
-function detailPanel() {
+/* One sentence, not a wall of tiles. */
+function renderHeadline() {
+  const box = $("#headline"), ps = state.products, job = state.job || {};
+  box.innerHTML = "";
+  if (job.busy) {
+    box.append(el("span", { className: "working" }),
+               el("span", { textContent: ` Checking ${job.done}/${job.total}${job.current ? " · " + job.current : ""}` }));
+    $("#btn-check").disabled = true;
+    return;
+  }
+  $("#btn-check").disabled = false;
+  if (!ps.length) { box.append(el("span", { textContent: state.llm ? `AI: ${state.llm}` : "" })); return; }
+
+  const hits = ps.filter((p) => p.target_hit).length;
+  const fell = ps.filter((p) => (p.change_pct ?? 0) < -0.01).length;
+  const bad = ps.filter((p) => p.fail_count > 0).length;
+  box.append(el("b", { textContent: `${ps.length} tracked` }));
+  if (hits) box.append(el("span", { textContent: " · " }), el("span", { className: "lede", textContent: `${hits} at or below target` }));
+  else if (fell) box.append(el("span", { textContent: ` · ${fell} cheaper than when you started` }));
+  else box.append(el("span", { textContent: " · nothing below target yet" }));
+  if (bad) box.append(el("span", { textContent: ` · ${bad} need${bad > 1 ? "" : "s"} a look` }));
+}
+
+/* ---------------- detail drawer ---------------- */
+function drawer() {
   const side = $("#side");
   side.innerHTML = "";
+  side.classList.remove("empty-state");
   const p = state.products.find((x) => x.name === state.selected);
 
   const tabs = el("div", { className: "tabs" });
-  [["detail", "Product"], ["alerts", "Alerts"], ["sites", "Supported sites"]].forEach(([key, label]) => {
+  [["detail", "Product"], ["alerts", "Activity"], ["sites", "Shops"]].forEach(([key, label]) => {
     const b = el("button", { textContent: label, className: state.tab === key ? "on" : "" });
-    b.onclick = () => { state.tab = key; detailPanel(); };
+    b.onclick = () => { state.tab = key; drawer(); };
     tabs.append(b);
   });
   side.append(tabs);
 
-  if (state.tab === "alerts") return renderAlerts(side);
-  if (state.tab === "sites") return renderSites(side);
+  if (state.tab === "alerts") return renderFeed(side);
+  if (state.tab === "sites") return renderShops(side);
   if (!p) {
-    side.append(el("p", { className: "hint", textContent: "Select a product to see its price history and settings." }));
+    side.append(el("p", { className: "hint", textContent: "Pick a row to see its history, and to change what it alerts on." }));
     if (state.job.log?.length) {
-      side.append(el("div", { className: "section" }, [
-        el("h4", { textContent: "Last run" }),
-        el("div", { className: "log", textContent: state.job.log.join("\n") }),
+      side.append(el("div", { className: "block" }, [
+        el("h4", { textContent: "Last run" }), el("div", { className: "log", textContent: state.job.log.join("\n") }),
       ]));
     }
     return;
   }
 
   side.append(el("h2", { textContent: p.title || p.name }));
-  if (p.title && p.title !== p.name) {
-    side.append(el("div", { className: "retailer", style: "margin:-2px 0 6px", textContent: `${p.retailer} · ${p.name}` }));
-  }
-  const link = el("a", { href: p.url, target: "_blank", rel: "noreferrer", textContent: p.url });
-  side.append(el("div", { className: "url" }, [link]));
+  side.append(el("a", { className: "url", href: p.url, target: "_blank", rel: "noreferrer", textContent: p.url }));
   side.append(bigChart(p));
 
-  const facts = el("div", { className: "section" }, [el("h4", { textContent: "Numbers" })]);
   const kv = (k, v) => el("div", { className: "kv" }, [
     el("span", { className: "k", textContent: k }), el("span", { className: "v", textContent: v })]);
-  facts.append(
-    kv("Current", money(p.last_price, p.currency)),
+  side.append(el("div", { className: "block" }, [
+    el("h4", { textContent: "Numbers" }),
+    kv("Now", money(p.last_price, p.currency)),
     kv("Target", p.target_price == null ? "—" : money(p.target_price, p.currency)),
-    kv("All-time low", money(p.low, p.currency)),
-    kv("All-time high", money(p.high, p.currency)),
+    kv("Lowest seen", money(p.low, p.currency)),
+    kv("Highest seen", money(p.high, p.currency)),
     kv("Average", money(p.avg, p.currency)),
-    kv("Change since first check", p.change_pct == null ? "—" : pct(p.change_pct)),
-    kv("Checks recorded", String(p.checks)),
+    kv("Since first check", p.change_pct == null ? "—" : `${p.change_pct > 0 ? "+" : ""}${p.change_pct.toFixed(1)}%`),
+    kv("Readings", String(p.checks)),
     kv("Stock", p.last_in_stock === null ? "unknown" : p.last_in_stock ? "in stock" : "out of stock"),
-    kv("Last checked", when(p.last_checked)),
-    kv("Reads price via", p.selector || p.learned_selector || "auto-detection"),
-  );
-  side.append(facts);
+    kv("Checked", when(p.last_checked)),
+    kv("Price read from", p.selector || p.learned_selector || "auto-detection"),
+  ]));
 
-  const settings = el("div", { className: "section" }, [el("h4", { textContent: "Settings" })]);
+  const settings = el("div", { className: "block" }, [el("h4", { textContent: "Settings" })]);
   const target = el("input", { type: "number", step: "0.01", min: "0", value: p.target_price ?? "" });
   const selector = el("input", { type: "text", value: p.selector || "", placeholder: p.learned_selector || "auto-detect" });
-  settings.append(el("label", { textContent: "Alert at or below" }), target,
-                  el("label", { textContent: "CSS selector (leave blank to auto-detect)" }), selector);
+  settings.append(el("label", { textContent: "Tell me at or below" }), target,
+                  el("label", { textContent: "CSS selector" }), selector);
 
-  const actions = el("div", { className: "actions" });
   const save = el("button", { className: "btn primary sm", textContent: "Save" });
   save.onclick = async () => {
-    save.disabled = true; save.textContent = "Saving…";
-    await api(`/api/products/${encodeURIComponent(p.name)}`, "PATCH", {
-      target_price: target.value === "" ? null : target.value,
-      selector: selector.value.trim(),
-    });
+    save.disabled = true; save.textContent = "Saving";
+    await api(`/api/products/${encodeURIComponent(p.name)}`, "PATCH",
+              { target_price: target.value === "" ? null : target.value, selector: selector.value.trim() });
     await refresh();
   };
-  const checkOne = el("button", { className: "btn sm", textContent: "Check now" });
-  checkOne.onclick = async () => { await api("/api/check", "POST", { names: [p.name] }); poll(); };
+  const now = el("button", { className: "btn sm", textContent: "Check now" });
+  now.onclick = async () => { await api("/api/check", "POST", { names: [p.name] }); state.job.busy = true; renderHeadline(); poll(); };
   const pause = el("button", { className: "btn sm", textContent: p.active ? "Pause" : "Resume" });
-  pause.onclick = async () => {
-    await api(`/api/products/${encodeURIComponent(p.name)}`, "PATCH", { active: !p.active });
-    await refresh();
-  };
-  const del = el("button", { className: "btn danger sm", textContent: "Remove" });
-  del.onclick = async () => {
-    if (!confirm(`Stop tracking "${p.name}"? Its price history is deleted too.`)) return;
+  pause.onclick = async () => { await api(`/api/products/${encodeURIComponent(p.name)}`, "PATCH", { active: !p.active }); await refresh(); };
+  const drop = el("button", { className: "btn danger sm", textContent: "Stop tracking" });
+  drop.onclick = async () => {
+    if (!confirm(`Stop tracking "${p.title || p.name}"? Its price history goes too.`)) return;
     await api(`/api/products/${encodeURIComponent(p.name)}`, "DELETE");
     state.selected = null; await refresh();
   };
-  actions.append(save, checkOne, pause, del);
-  settings.append(actions);
+  settings.append(el("div", { className: "actions" }, [save, now, pause, drop]));
   side.append(settings);
 
   const mine = state.alerts.filter((a) => a.product === p.name).slice(0, 6);
   if (mine.length) {
-    const box = el("div", { className: "section" }, [el("h4", { textContent: "Recent alerts" })]);
-    const list = el("div", { className: "alertlist" });
-    mine.forEach((a) => list.append(alertRow(a, false)));
-    box.append(list); side.append(box);
+    side.append(el("div", { className: "block" }, [
+      el("h4", { textContent: "Recent activity" }),
+      el("div", { className: "feed" }, mine.map((a) => feedItem(a, false))),
+    ]));
   }
 }
 
-const ICONS = { target_hit: "🎯", price_drop: "📉", price_rise: "📈", back_in_stock: "📦", out_of_stock: "🚫", error: "⚠️" };
-function alertRow(a, showProduct = true) {
-  const node = el("div", { className: "alert" });
-  node.append(el("span", { textContent: ICONS[a.kind] || "•" }));
-  const body = el("div");
-  body.append(el("div", { textContent: showProduct ? a.message : a.message.replace(`${a.product} `, "") }));
-  body.append(el("div", { className: "when", textContent: when(a.ts) }));
-  node.append(body);
+const MARKS = { target_hit: "◆", price_drop: "▼", price_rise: "▲", back_in_stock: "◇", out_of_stock: "○", error: "!" };
+function feedItem(a, showProduct = true) {
+  const node = el("div", { className: "feed-item" });
+  node.append(el("span", { className: "num", style: `color:var(--${a.kind === "price_rise" || a.kind === "error" ? "rise" : "drop"})`,
+                           textContent: MARKS[a.kind] || "·" }));
+  node.append(el("div", {}, [
+    el("div", { textContent: showProduct ? a.message : a.message.replace(`${a.product} `, "") }),
+    el("div", { className: "when", textContent: when(a.ts) }),
+  ]));
   return node;
 }
 
-function renderAlerts(side) {
+function renderFeed(side) {
   if (!state.alerts.length) {
-    side.append(el("p", { className: "hint", textContent: "No alerts yet. They appear when a price crosses your target, drops sharply, or an item comes back in stock." }));
+    side.append(el("p", { className: "hint", textContent:
+      "Nothing yet. Activity appears when a price crosses your target, falls sharply, or something comes back in stock." }));
     return;
   }
-  const list = el("div", { className: "alertlist" });
-  state.alerts.forEach((a) => list.append(alertRow(a)));
-  side.append(list);
+  side.append(el("div", { className: "feed" }, state.alerts.map((a) => feedItem(a))));
 }
 
-function renderSites(side) {
+function renderShops(side) {
   side.append(el("p", { className: "hint", textContent:
-    "These retailers have built-in extraction rules. Any other shop still works through schema.org data, embedded JSON, heuristics and Claude." }));
-  const list = el("div", { className: "alertlist" });
+    "These shops have built-in rules. Anywhere else still works through schema.org data, embedded JSON, page heuristics and Claude." }));
+  const feed = el("div", { className: "feed" });
   state.sites.forEach((s) => {
-    const row = el("div", { className: "alert" });
-    row.append(el("span", { textContent: s.protection === "high" ? "🛡️" : s.protection === "medium" ? "◐" : "✓" }));
-    const body = el("div");
-    body.append(el("div", { textContent: s.name }));
-    body.append(el("div", { className: "when", textContent: s.domain + (s.protection === "high" ? " · blocks bots, may need browser mode" : "") }));
-    row.append(body); list.append(row);
+    feed.append(el("div", { className: "feed-item" }, [
+      el("span", { className: "num", style: "color:var(--ink-3)", textContent: s.protection === "high" ? "◐" : "●" }),
+      el("div", {}, [
+        el("div", { textContent: s.name }),
+        el("div", { className: "when", textContent: s.domain + (s.protection === "high" ? " · needs browser mode" : "") }),
+      ]),
+    ]));
   });
-  side.append(list);
+  side.append(feed);
 }
 
-function renderStatus() {
-  const s = $("#status"), job = state.job || {};
-  s.innerHTML = "";
-  if (job.busy) {
-    s.append(el("span", { className: "spin" }),
-             el("span", { textContent: `Checking ${job.done}/${job.total}${job.current ? " — " + job.current : ""}` }));
-    $("#btn-check").disabled = true;
-  } else {
-    $("#btn-check").disabled = false;
-    const bits = [];
-    if (job.last_summary) bits.push(job.last_summary);
-    if (state.llm) bits.push(`AI: ${state.llm}`);
-    s.append(el("span", { textContent: bits.join("  ·  ") }));
-  }
-}
-
-function render() { renderSummary(); renderGrid(); detailPanel(); renderStatus(); }
+function render() { renderHeadline(); renderLedger(); drawer(); }
 
 /* ---------------- data ---------------- */
 async function api(path, method = "GET", body) {
@@ -401,122 +396,89 @@ async function api(path, method = "GET", body) {
 }
 
 async function refresh() {
-  const data = await api("/api/state");
-  Object.assign(state, data);
+  Object.assign(state, await api("/api/state"));
   if (state.selected && !state.products.some((p) => p.name === state.selected)) state.selected = null;
   render();
 }
 
-let pollTimer = null;
+let timer = null;
 function poll() {
-  clearInterval(pollTimer);
-  pollTimer = setInterval(async () => {
+  clearInterval(timer);
+  timer = setInterval(async () => {
     const job = await api("/api/job");
-    const wasBusy = state.job.busy;
+    const was = state.job.busy;
     state.job = job;
-    renderStatus();
-    if (wasBusy && !job.busy) { await refresh(); clearInterval(pollTimer); }
-    if (!wasBusy && !job.busy) clearInterval(pollTimer);
+    renderHeadline();
+    if (was && !job.busy) { await refresh(); clearInterval(timer); }
+    if (!was && !job.busy) clearInterval(timer);
   }, 900);
 }
 
-/* ---------------- wiring ---------------- */
-$("#btn-check").onclick = async () => { await api("/api/check", "POST", {}); state.job.busy = true; renderStatus(); poll(); };
-$("#search").oninput = (e) => { state.query = e.target.value; renderGrid(); };
-$("#sort").onchange = (e) => { state.sort = e.target.value; renderGrid(); };
-$("#filters").onclick = (e) => {
-  const b = e.target.closest("button"); if (!b) return;
-  state.filter = b.dataset.filter;
-  [...$("#filters").children].forEach((c) => c.classList.toggle("on", c === b));
-  renderGrid();
-};
+/* ---------------- add dialog ---------------- */
+let addMode = "name", picked = null, results = [];
 
-/* ---------------- add dialog: search by name or paste a URL ---------------- */
-let addMode = "name";
-let chosen = null;   // the search result the user picked
-
-function setAddMode(mode) {
+function setMode(mode) {
   addMode = mode;
   $("#mode-name").hidden = mode !== "name";
   $("#mode-url").hidden = mode !== "url";
   [...$("#add-mode").children].forEach((b) => b.classList.toggle("on", b.dataset.mode === mode));
 }
 
-function resultRow(r) {
-  const row = el("div", { className: "alert", style: "cursor:pointer" });
-  if (chosen && chosen.url === r.url) row.style.borderColor = "var(--accent)";
-  row.onclick = () => { chosen = r; renderResults(window.__results || []); };
-  row.append(el("span", { textContent: chosen && chosen.url === r.url ? "◉" : "○" }));
-  const body = el("div", { style: "flex:1" });
-  const head = el("div", { style: "display:flex;justify-content:space-between;gap:10px" });
-  head.append(
-    el("strong", { textContent: r.price == null ? "no price" : money(r.price, r.currency) }),
-    el("span", { style: "color:var(--dim)", textContent: r.retailer }),
-  );
-  body.append(head, el("div", { textContent: r.title.slice(0, 92) }));
-  if (r.note) body.append(el("div", { className: "when", textContent: r.note }));
-  else if (r.in_stock === false) body.append(el("div", { className: "when", textContent: "out of stock" }));
-  row.append(body);
-  return row;
-}
-
-function renderResults(results) {
-  window.__results = results;
+function renderResults() {
   const box = $("#results");
+  box.hidden = !results.length;
   box.innerHTML = "";
-  if (!results.length) {
-    box.append(el("div", { className: "hint", textContent: "Nothing found — try the brand and model, e.g. \"logitech mx master 3s\"." }));
-    return;
-  }
-  results.forEach((r) => box.append(resultRow(r)));
+  results.forEach((r) => {
+    const node = el("div", { className: "result" + (picked && picked.url === r.url ? " on" : "") });
+    node.onclick = () => { picked = r; renderResults(); };
+    node.append(el("div", { className: "p", textContent: r.price == null ? "—" : money(r.price, r.currency) }));
+    node.append(el("div", { className: "t", style: "flex:1" }, [
+      el("div", { className: "t", textContent: r.title.slice(0, 76) }),
+      el("div", { className: "r", textContent: r.retailer + (r.note ? ` · ${r.note.slice(0, 40)}` : r.in_stock === false ? " · out of stock" : "") }),
+    ]));
+    box.append(node);
+  });
 }
 
-$("#add-mode").onclick = (e) => { const b = e.target.closest("button"); if (b) setAddMode(b.dataset.mode); };
-
+$("#add-mode").onclick = (e) => { const b = e.target.closest("button"); if (b) setMode(b.dataset.mode); };
 $("#btn-search").onclick = async () => {
   const q = $("#f-query").value.trim();
   if (q.length < 2) return;
   const btn = $("#btn-search"), err = $("#add-err");
-  err.hidden = true; btn.disabled = true; btn.textContent = "Searching…";
-  $("#results").innerHTML = '<div class="hint">Searching the web and reading prices — this takes a few seconds…</div>';
+  err.hidden = true; btn.disabled = true; btn.textContent = "Searching";
+  $("#results").hidden = false;
+  $("#results").innerHTML = '<div style="padding:14px;color:var(--ink-3);font-size:12.5px">Reading prices from each candidate…</div>';
   try {
     const data = await api(`/api/search?q=${encodeURIComponent(q)}`);
-    chosen = data.results.find((r) => r.price != null) || data.results[0] || null;
-    renderResults(data.results);
-    if (chosen && !$("#f-name").value) $("#f-name").value = "";
+    results = data.results;
+    picked = results.find((r) => r.price != null) || results[0] || null;
+    renderResults();
+    if (!results.length) $("#results").innerHTML = '<div style="padding:14px;color:var(--ink-3);font-size:12.5px">Nothing found. Try the brand and model.</div>';
   } catch (e) {
-    $("#results").innerHTML = "";
+    $("#results").hidden = true;
     err.textContent = e.message; err.hidden = false;
-  } finally {
-    btn.disabled = false; btn.textContent = "Search";
-  }
+  } finally { btn.disabled = false; btn.textContent = "Search"; }
 };
 
 const dlg = $("#dlg-add");
 const openAdd = () => {
-  $("#add-err").hidden = true;
-  $("#form-add").reset();
-  chosen = null; $("#results").innerHTML = "";
-  setAddMode("name");
-  dlg.showModal();
-  $("#f-query").focus();
+  $("#form-add").reset(); $("#add-err").hidden = true;
+  picked = null; results = []; renderResults();
+  setMode("name"); dlg.showModal(); $("#f-query").focus();
 };
 $("#btn-add").onclick = openAdd;
-$("#btn-add-empty").onclick = openAdd;
+$("#btn-add-blank").onclick = openAdd;
 
 $("#form-add").addEventListener("submit", async (ev) => {
   if (ev.submitter && ev.submitter.value === "cancel") return;
   ev.preventDefault();
   const btn = $("#btn-add-go"), err = $("#add-err");
-  const url = addMode === "name" ? (chosen && chosen.url) : $("#f-url").value.trim();
+  const url = addMode === "name" ? picked && picked.url : $("#f-url").value.trim();
   if (!url) {
-    err.textContent = addMode === "name"
-      ? "Search for the product first, then pick one of the results."
-      : "Paste a product URL.";
-    err.hidden = false;
-    return;
+    err.textContent = addMode === "name" ? "Search first, then choose one of the results." : "Paste a product link.";
+    err.hidden = false; return;
   }
-  err.hidden = true; btn.disabled = true; btn.textContent = "Fetching page…";
+  err.hidden = true; btn.disabled = true; btn.textContent = "Reading the page";
   try {
     await api("/api/products", "POST", {
       url,
@@ -529,27 +491,35 @@ $("#form-add").addEventListener("submit", async (ev) => {
   } catch (e) {
     err.textContent = e.message + (e.data?.hint ? ` — ${e.data.hint}` : "");
     err.hidden = false;
-  } finally {
-    btn.disabled = false; btn.textContent = "Track it";
-  }
+  } finally { btn.disabled = false; btn.textContent = "Start tracking"; }
 });
 
-const THEME_KEY = "pricemon.theme";
-function applyTheme(mode) {
+/* ---------------- chrome ---------------- */
+$("#btn-check").onclick = async () => { await api("/api/check", "POST", {}); state.job.busy = true; renderHeadline(); poll(); };
+$("#search").oninput = (e) => { state.query = e.target.value; renderLedger(); };
+$("#sort").onchange = (e) => { state.sort = e.target.value; renderLedger(); };
+$("#filters").onclick = (e) => {
+  const b = e.target.closest("button"); if (!b) return;
+  state.filter = b.dataset.filter;
+  [...$("#filters").children].forEach((c) => c.classList.toggle("on", c === b));
+  renderLedger();
+};
+
+const THEME = "pricemon.theme";
+const setTheme = (mode) => {
   document.documentElement.dataset.theme = mode;
-  try { localStorage.setItem(THEME_KEY, mode); } catch { /* private mode */ }
-}
-$("#btn-theme").onclick = () => applyTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark");
-try {
-  const saved = localStorage.getItem(THEME_KEY);
-  applyTheme(saved || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light"));
-} catch { applyTheme("light"); }
+  try { localStorage.setItem(THEME, mode); } catch { /* storage may be blocked */ }
+};
+$("#btn-theme").onclick = () => setTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark");
+try { setTheme(localStorage.getItem(THEME) || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light")); }
+catch { setTheme("light"); }
 
 document.addEventListener("keydown", (e) => {
-  if (e.key === "/" && document.activeElement !== $("#search") && !dlg.open) { e.preventDefault(); $("#search").focus(); }
-  if (e.key === "Escape" && !dlg.open) { state.selected = null; render(); }
-  if ((e.metaKey || e.ctrlKey) && e.key === "n") { e.preventDefault(); openAdd(); }
+  if (dlg.open) return;
+  if (e.key === "/" && document.activeElement !== $("#search")) { e.preventDefault(); $("#search").focus(); }
+  if (e.key === "Escape") { state.selected = null; render(); }
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "n") { e.preventDefault(); openAdd(); }
 });
 
 refresh().then(() => { if (state.job.busy) poll(); });
-setInterval(() => { if (!state.job.busy) refresh(); }, 20000);
+setInterval(() => { if (!state.job.busy && !dlg.open) refresh(); }, 20000);
