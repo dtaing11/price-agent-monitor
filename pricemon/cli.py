@@ -14,7 +14,7 @@ from . import config as config_mod
 from . import cron as cron_mod
 from . import notify
 from .agent import Agent
-from .models import Product
+from .models import Product, utcnow
 from .money import format_price
 from .storage import Store
 
@@ -79,6 +79,7 @@ def cmd_add(args) -> int:
         notes=args.notes or "",
         last_price=(ex.price if ex and ex.ok else None),
         last_in_stock=(ex.in_stock if ex else None),
+        last_checked=(utcnow() if ex and ex.ok else None),
     )
     store.add_product(p)
     if ex and ex.ok:
@@ -294,9 +295,14 @@ def build_parser() -> argparse.ArgumentParser:
         prog="pricemon",
         description="An AI agent that watches product pages and tells you when the price drops.")
     ap.add_argument("--model", help="override the LLM model for this run (e.g. haiku)")
+    # Same flag accepted after the subcommand too; SUPPRESS keeps the outer value
+    # when the inner one is omitted.
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--model", default=argparse.SUPPRESS,
+                        help="override the LLM model for this run (e.g. haiku)")
     sub = ap.add_subparsers(dest="command", required=True)
 
-    a = sub.add_parser("add", help="start watching a product page")
+    a = sub.add_parser("add", parents=[common], help="start watching a product page")
     a.add_argument("url")
     a.add_argument("--name", help="short name (default: derived from the page title)")
     a.add_argument("--target", type=float, help="alert when the price reaches this or lower")
@@ -311,13 +317,13 @@ def build_parser() -> argparse.ArgumentParser:
     a = sub.add_parser("list", help="show everything being watched")
     a.set_defaults(func=cmd_list)
 
-    a = sub.add_parser("check", help="check prices now and fire alerts")
+    a = sub.add_parser("check", parents=[common], help="check prices now and fire alerts")
     a.add_argument("names", nargs="*", help="limit to these products")
     a.add_argument("--no-llm", action="store_true")
     a.add_argument("--quiet", "-q", action="store_true", help="only print alerts (use this in cron)")
     a.set_defaults(func=cmd_check)
 
-    a = sub.add_parser("watch", help="keep checking on an interval in the foreground")
+    a = sub.add_parser("watch", parents=[common], help="keep checking on an interval in the foreground")
     a.add_argument("--interval", type=int, default=3600, help="seconds between rounds (default 3600)")
     a.add_argument("--no-llm", action="store_true")
     a.set_defaults(func=cmd_watch)

@@ -25,6 +25,20 @@ IN_STOCK_MARKERS = ["in stock", "add to cart", "add to basket", "add to bag", "b
 # class/id fragments that suggest we found the *current* price
 GOOD_HINTS = ["price", "prijs", "preis", "prezzo", "precio", "amount", "cost"]
 STRONG_HINTS = ["sale", "now", "current", "our-price", "offer", "final", "deal", "special"]
+# Ancestor containers that mark the *main* product region of a page...
+MAIN_REGION_HINTS = [
+    "product_main", "product-main", "product-info", "product-detail", "product-page",
+    "product-summary", "pdp", "buybox", "buy-box", "product-single", "productview",
+    "product-form", "offers",
+]
+# ...and ones that mark recommendation carousels, upsells and listing cards.
+ASIDE_REGION_HINTS = [
+    "product_pod", "recommend", "related", "upsell", "cross-sell", "crosssell",
+    "also-bought", "also-viewed", "similar", "carousel", "slider", "recently",
+    "sidebar", "widget", "suggest", "you-may", "bundle", "accessor", "cart",
+    "wishlist", "compare", "footer", "nav", "breadcrumb",
+]
+
 BAD_HINTS = [
     "old", "was", "list", "regular", "strike", "compare", "rrp", "msrp", "original",
     "shipping", "tax", "vat", "installment", "per-month", "monthly", "credit",
@@ -217,8 +231,28 @@ def _css_path(el) -> str:
     return el.name
 
 
+def _region_score(el) -> float:
+    """Reward prices in the main product region, punish carousel/listing cards."""
+    delta = 0.0
+    node, depth = el.parent, 0
+    while node is not None and depth < 7 and getattr(node, "name", None):
+        if node.name in ("aside", "nav", "footer", "header"):
+            delta -= 0.30
+        if node.name == "li":
+            delta -= 0.15          # a price inside a list item is usually a card
+        ident = " ".join([" ".join(node.get("class") or []), node.get("id") or "",
+                          node.get("itemtype") or ""]).lower()
+        if any(h in ident for h in ASIDE_REGION_HINTS):
+            delta -= 0.35
+        if any(h in ident for h in MAIN_REGION_HINTS):
+            delta += 0.20
+        node, depth = node.parent, depth + 1
+    return max(-0.5, min(delta, 0.25))
+
+
 def from_heuristics(soup: BeautifulSoup) -> List[Extraction]:
     out: List[Extraction] = []
+    order = 0
     for el in soup.find_all(["span", "div", "p", "b", "strong", "ins", "bdi", "h1", "h2", "h3", "td", "meta"]):
         attrs = " ".join(
             [" ".join(el.get("class") or []), el.get("id") or "",
@@ -234,7 +268,8 @@ def from_heuristics(soup: BeautifulSoup) -> List[Extraction]:
         if price is None or price <= 0:
             continue
 
-        score = 0.45
+        order += 1
+        score = 0.45 + _region_score(el)
         if any(h in attrs for h in STRONG_HINTS):
             score += 0.15
         if any(h in attrs for h in BAD_HINTS):
@@ -245,6 +280,9 @@ def from_heuristics(soup: BeautifulSoup) -> List[Extraction]:
             score += 0.10
         if el.name == "meta":
             score += 0.05
+        # Tiny document-order nudge: the real price almost always appears
+        # before the recommendations.
+        score -= min(order, 50) * 0.001
         out.append(Extraction(price=price, currency=currency, method="heuristic",
                               confidence=max(0.05, min(score, 0.72)),
                               selector=_css_path(el), note=f"text {text!r}"))

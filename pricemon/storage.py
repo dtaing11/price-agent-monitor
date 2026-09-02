@@ -62,10 +62,12 @@ class Store:
         cur = self.conn.execute(
             """INSERT INTO products
                (name, url, selector, learned_selector, target_price, currency,
-                active, notes, created_at)
-               VALUES (?,?,?,?,?,?,?,?,?)""",
+                active, notes, created_at, last_checked, last_price, last_in_stock)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
             (p.name, p.url, p.selector, p.learned_selector, p.target_price,
-             p.currency, int(p.active), p.notes, p.created_at),
+             p.currency, int(p.active), p.notes, p.created_at, p.last_checked,
+             p.last_price,
+             None if p.last_in_stock is None else int(p.last_in_stock)),
         )
         self.conn.commit()
         p.id = cur.lastrowid

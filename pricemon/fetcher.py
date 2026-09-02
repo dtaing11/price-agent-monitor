@@ -118,7 +118,11 @@ def fetch(url: str, cfg: dict, session: Optional[requests.Session] = None) -> Tu
             last_err = f"{type(exc).__name__}: {exc}"
         else:
             if resp.status_code == 200:
-                resp.encoding = resp.encoding or resp.apparent_encoding
+                # requests falls back to ISO-8859-1 whenever the server omits a
+                # charset, which turns UTF-8 pages into mojibake ("Â£53.74").
+                # Only trust the header when it actually declares one.
+                if "charset" not in resp.headers.get("Content-Type", "").lower():
+                    resp.encoding = resp.apparent_encoding or resp.encoding
                 return resp.text, resp.url
             if resp.status_code in (429, 500, 502, 503, 504):
                 retry_after = resp.headers.get("Retry-After")
