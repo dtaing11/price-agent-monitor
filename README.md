@@ -525,6 +525,12 @@ supported path.
 
 **`robots.txt disallows`** — only appears if you set `fetch.respect_robots: true`. Set it back to `false` to fetch anyway.
 
+**"incompatible architecture" when searching from the app** (Apple Silicon) —
+a universal Python launched from a `.app` can start under Rosetta, and then
+every arm64 wheel in site-packages fails to load. `pricemon install-desktop`
+pins the app to the hardware architecture; re-run it if this appears after
+changing or reinstalling Python.
+
 **Cron ran but nothing happened** — check `~/.price-monitor/cron.log`, and
 confirm the entries exist with `crontab -l`. If desktop pop-ups don't appear
 but the log shows alerts, your session bus differs from the one in the crontab
