@@ -9,9 +9,9 @@ When everything really is spent, the caller gets stale results or
 ```python
 from pricemon.searchlayer import build_router
 
-router = build_router()                       # reads keys from the environment
+router = build_router()  # reads keys from the environment
 results = await router.search("thunderbolt dock", count=8)
-print(router.report())                        # hit rate, calls, skips, errors
+print(router.report())  # hit rate, calls, skips, errors
 ```
 
 ## Why it is shaped this way
