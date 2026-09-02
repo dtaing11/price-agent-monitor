@@ -39,6 +39,10 @@ DEFAULTS: dict[str, Any] = {
         "notify_price_rise": False,
         "notify_stock_change": True,
         "fail_streak_alert": 3,  # notify after N consecutive scrape failures
+        # A change larger than this is re-read and confirmed before it alerts:
+        # a huge overnight "drop" is usually a redesigned page, not a sale.
+        # 0 disables the check.
+        "implausible_pct": 65.0,
     },
     "notify": {
         "console": True,

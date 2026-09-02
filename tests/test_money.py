@@ -1,10 +1,11 @@
 import unittest
+from typing import ClassVar
 
 from pricemon.money import format_price, parse_price
 
 
 class TestParsePrice(unittest.TestCase):
-    CASES = [
+    CASES: ClassVar[list] = [
         ("$1,234.56", 1234.56, "USD"),
         ("1.234,56 €", 1234.56, "EUR"),
         ("USD 45.00", 45.0, "USD"),

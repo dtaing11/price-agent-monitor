@@ -214,6 +214,76 @@ class Agent:
         return alerts
 
     # ------------------------------------------------------------------
+    def _implausible(self, p: Product, ex: Extraction) -> str | None:
+        """Is this price change too large to take at face value?
+
+        The common cause of a huge overnight "drop" is not a sale - it is a
+        redesigned page where the selector now points at an accessory, a
+        monthly instalment or a delivery charge. Alerting on that trains you to
+        ignore alerts, which costs more than the deal you miss.
+        """
+        if p.last_price is None or ex.price is None or p.last_price <= 0:
+            return None
+        limit = float(self.cfg["alerts"].get("implausible_pct", 65.0))
+        if limit <= 0:
+            return None
+        change = abs(ex.price - p.last_price) / p.last_price * 100
+        if change < limit:
+            return None
+        direction = "fall" if ex.price < p.last_price else "jump"
+        return (
+            f"implausible {change:.0f}% {direction} "
+            f"({format_price(p.last_price, p.currency)} → "
+            f"{format_price(ex.price, ex.currency or p.currency)})"
+        )
+
+    def _second_opinion(
+        self, p: Product, ex: Extraction
+    ) -> tuple[Extraction, str | None]:
+        """Re-read the page, asking Claude, before believing a wild change.
+
+        Returns the reading to record and the reason to stay quiet, if any. A
+        confirmed change is a real one - a genuine 70% clearance still alerts,
+        it just has to survive a second look first.
+        """
+        if not self.llm.available:
+            return ex, self._implausible(p, ex)
+        self.log("  price moved implausibly - re-reading the page to confirm")
+        try:
+            html, final_url = fetch(p.url, self.cfg["fetch"], session=self.session)
+            candidates = extract_mod.extract(
+                html,
+                selector=p.selector,
+                learned_selector=p.learned_selector,
+                url=final_url,
+            )[1]
+            second = self.llm.extract(html, final_url, candidates)
+        except (FetchError, LLMUnavailable) as exc:
+            self.log(f"  could not confirm ({exc})")
+            return ex, self._implausible(p, ex)
+        except Exception as exc:  # noqa: BLE001 - a failed check must not kill the run
+            self.log(f"  could not confirm ({type(exc).__name__}: {exc})")
+            return ex, self._implausible(p, ex)
+
+        if second.price is None:
+            return ex, self._implausible(p, ex)
+        if abs(second.price - (ex.price or 0)) <= max(0.01, second.price * 0.01):
+            self.log(f"  confirmed at {format_price(second.price, second.currency)}")
+            if second.selector:
+                p.learned_selector = second.selector
+            return second, None
+
+        # The two readings disagree: the page changed shape. Keep Claude's
+        # reading, which was told to find the price a shopper actually pays.
+        self.log(
+            f"  readings disagree ({format_price(ex.price, ex.currency)} vs "
+            f"{format_price(second.price, second.currency)}) - taking the "
+            f"second and staying quiet this round"
+        )
+        if second.selector:
+            p.learned_selector = second.selector
+        return second, self._implausible(p, second)
+
     def check(self, p: Product, use_llm: bool = True) -> CheckResult:
         self.log(f"→ {p.name}")
         try:
@@ -226,7 +296,23 @@ class Agent:
         if not ex.ok:
             return self._record_failure(p, "no price found on page")
 
-        alerts = self._decide(p, ex)
+        suspect = self._implausible(p, ex)
+        if suspect:
+            ex, suspect = self._second_opinion(p, ex)
+
+        alerts = [] if suspect else self._decide(p, ex)
+        if suspect:
+            self.log(f"  {suspect} — recorded, but not alerting on it")
+            alerts = [
+                Alert(
+                    kind="needs_check",
+                    product=p.name,
+                    price=ex.price,
+                    currency=ex.currency or p.currency,
+                    url=p.url,
+                    message=f"{p.title or p.name}: {suspect}",
+                )
+            ]
         self.store.record(p, ex)
 
         # Learn: keep a verified selector so the next run skips the LLM.

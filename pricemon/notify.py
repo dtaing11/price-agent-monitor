@@ -33,6 +33,7 @@ ICONS = {
     "back_in_stock": "📦",
     "out_of_stock": "🚫",
     "error": "⚠️",
+    "needs_check": "🔍",
 }
 COLORS = {
     "target_hit": "\033[1;32m",
@@ -41,6 +42,7 @@ COLORS = {
     "back_in_stock": "\033[1;36m",
     "out_of_stock": "\033[35m",
     "error": "\033[31m",
+    "needs_check": "\033[33m",
 }
 RESET = "\033[0m"
 

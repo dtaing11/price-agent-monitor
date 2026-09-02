@@ -344,10 +344,10 @@ function drawer() {
   }
 }
 
-const MARKS = { target_hit: "◆", price_drop: "▼", price_rise: "▲", back_in_stock: "◇", out_of_stock: "○", error: "!" };
+const MARKS = { target_hit: "◆", price_drop: "▼", price_rise: "▲", back_in_stock: "◇", out_of_stock: "○", error: "!", needs_check: "?" };
 function feedItem(a, showProduct = true) {
   const node = el("div", { className: "feed-item" });
-  node.append(el("span", { className: "num", style: `color:var(--${a.kind === "price_rise" || a.kind === "error" ? "rise" : "drop"})`,
+  node.append(el("span", { className: "num", style: `color:var(--${["price_rise", "error", "needs_check"].includes(a.kind) ? "rise" : "drop"})`,
                            textContent: MARKS[a.kind] || "·" }));
   node.append(el("div", {}, [
     el("div", { textContent: showProduct ? a.message : a.message.replace(`${a.product} `, "") }),
