@@ -18,6 +18,7 @@ class Product:
     name: str
     url: str
     id: int | None = None
+    title: str | None = None  # the product's own name, as the page states it
     selector: str | None = None  # user-pinned, always tried first
     learned_selector: str | None = None  # discovered by the LLM, self-healing
     target_price: float | None = None

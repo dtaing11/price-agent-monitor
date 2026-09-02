@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS products (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,
     name             TEXT UNIQUE NOT NULL,
     url              TEXT NOT NULL,
+    title            TEXT,
     selector         TEXT,
     learned_selector TEXT,
     target_price     REAL,
@@ -55,7 +56,15 @@ class Store:
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.conn.executescript(SCHEMA)
+        self._migrate()
         self.conn.commit()
+
+    def _migrate(self) -> None:
+        """Add columns introduced after a database was first created."""
+        have = {r["name"] for r in self.conn.execute("PRAGMA table_info(products)")}
+        for column, ddl in (("title", "TEXT"),):
+            if column not in have:
+                self.conn.execute(f"ALTER TABLE products ADD COLUMN {column} {ddl}")
 
     # -- products ---------------------------------------------------------
     def add_product(self, p: Product) -> Product:
@@ -88,6 +97,7 @@ class Store:
             id=r["id"],
             name=r["name"],
             url=r["url"],
+            title=r["title"],
             selector=r["selector"],
             learned_selector=r["learned_selector"],
             target_price=r["target_price"],
@@ -119,11 +129,12 @@ class Store:
 
     def update_product(self, p: Product) -> None:
         self.conn.execute(
-            """UPDATE products SET url=?, selector=?, learned_selector=?, target_price=?,
-               currency=?, active=?, notes=?, last_checked=?, last_price=?,
-               last_in_stock=?, fail_count=? WHERE id=?""",
+            """UPDATE products SET url=?, title=?, selector=?, learned_selector=?,
+               target_price=?, currency=?, active=?, notes=?, last_checked=?,
+               last_price=?, last_in_stock=?, fail_count=? WHERE id=?""",
             (
                 p.url,
+                p.title,
                 p.selector,
                 p.learned_selector,
                 p.target_price,

@@ -15,6 +15,7 @@ from . import notify
 from .agent import Agent
 from .models import Product, utcnow
 from .money import format_price
+from .sites import canonical_url as sites_canonical
 from .storage import Store
 
 BOLD, DIM, RESET = "\033[1m", "\033[2m", "\033[0m"
@@ -49,7 +50,42 @@ def cmd_add(args) -> int:
     store, cfg = _open(args)
     agent = Agent(store, cfg, verbose=not args.quiet)
 
-    print(f"Fetching {args.url} ...")
+    url = args.url
+    if args.search:
+        from .llm import LLM
+        from .search import rank_with_ai, search
+
+        print(f"searching for {args.search!r} ...")
+        results = search(args.search, cfg, retailers=args.retailer or None, limit=6)
+        if not args.no_llm:
+            results = rank_with_ai(args.search, results, LLM(cfg["llm"]))
+        priced = [r for r in results if r.price is not None]
+        if not priced:
+            print("no product page with a readable price was found", file=sys.stderr)
+            for r in results[:5]:
+                print(f"  tried {r.url}  ({r.note})", file=sys.stderr)
+            return 1
+        if args.pick is None and len(priced) > 1:
+            print(f"\n{BOLD}  #  PRICE        RETAILER         PRODUCT{RESET}")
+            for i, r in enumerate(priced, 1):
+                print(f"{i:>3}  {r.describe()}")
+            print(
+                "\nre-run with --pick N to track one of these "
+                "(or --pick 1 to take the best match)"
+            )
+            return 0
+        chosen = priced[(args.pick or 1) - 1]
+        url = chosen.url
+        args.name = args.name or None
+        print(f"picked: {chosen.describe()}")
+
+    if not url:
+        print("error: give a product URL, or --search 'product name'", file=sys.stderr)
+        return 1
+    url = sites_canonical(url)
+    args.url = url
+
+    print(f"Fetching {url} ...")
     try:
         ex, candidates = agent.scrape(args.url, use_llm=not args.no_llm)
     except Exception as exc:  # noqa: BLE001
@@ -90,6 +126,7 @@ def cmd_add(args) -> int:
     p = Product(
         name=name,
         url=args.url,
+        title=(ex.title if ex else None),
         selector=args.selector,
         learned_selector=(
             ex.selector if ex and ex.method in ("llm", "heuristic") else None
@@ -106,6 +143,33 @@ def cmd_add(args) -> int:
         store.record(p, ex)
     target = f", target {format_price(args.target, p.currency)}" if args.target else ""
     print(f"{BOLD}watching{RESET} {name}{target}")
+    return 0
+
+
+def cmd_search(args) -> int:
+    from .search import rank_with_ai, search
+
+    store, cfg = _open(args)
+    store.close()
+    print(f"searching for {args.query!r} ...")
+    results = search(args.query, cfg, retailers=args.retailer or None, limit=args.limit)
+    if not results:
+        print("no product pages found - try more specific words, or a brand name")
+        return 1
+
+    if not args.no_llm:
+        from .llm import LLM
+
+        results = rank_with_ai(args.query, results, LLM(cfg["llm"]))
+
+    print(f"\n{BOLD}  #  PRICE        RETAILER         PRODUCT{RESET}")
+    for i, r in enumerate(results, 1):
+        print(f"{i:>3}  {r.describe()}")
+        if r.note:
+            print(f"     {DIM}{r.note[:88]}{RESET}")
+    print(
+        f"\ntrack one with:  pricemon add --search {args.query!r} --pick 1 --target 199"
+    )
     return 0
 
 
@@ -320,6 +384,29 @@ def cmd_uninstall_cron(args) -> int:
     return 0
 
 
+def cmd_serve(args) -> int:
+    from .webapp import serve
+
+    serve(port=args.port, host=args.host, open_browser=not args.no_open)
+    return 0
+
+
+def cmd_app(args) -> int:
+    """Open the tracker as a desktop window."""
+    from . import desktop
+
+    return desktop.launch(port=args.port)
+
+
+def cmd_install_desktop(args) -> int:
+    from . import desktop
+
+    path = desktop.install_launcher()
+    print(f"installed application launcher: {path}")
+    print("it should now appear in your applications menu as 'Price Monitor'")
+    return 0
+
+
 def cmd_report(args) -> int:
     from .report import build_report
 
@@ -376,7 +463,14 @@ def build_parser() -> argparse.ArgumentParser:
     sub = ap.add_subparsers(dest="command", required=True)
 
     a = sub.add_parser("add", parents=[common], help="start watching a product page")
-    a.add_argument("url")
+    a.add_argument("url", nargs="?", help="product URL (omit when using --search)")
+    a.add_argument("--search", help="find the product by name instead of a URL")
+    a.add_argument("--pick", type=int, help="with --search: track result number N")
+    a.add_argument(
+        "--retailer",
+        action="append",
+        help="limit --search to a retailer (repeatable), e.g. --retailer amazon",
+    )
     a.add_argument("--name", help="short name (default: derived from the page title)")
     a.add_argument(
         "--target", type=float, help="alert when the price reaches this or lower"
@@ -395,6 +489,19 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--verbose", "-v", action="store_true")
     a.add_argument("--quiet", "-q", action="store_true")
     a.set_defaults(func=cmd_add)
+
+    a = sub.add_parser(
+        "search", parents=[common], help="find product pages by name, with prices"
+    )
+    a.add_argument("query")
+    a.add_argument("--limit", type=int, default=6)
+    a.add_argument(
+        "--retailer",
+        action="append",
+        help="limit to a retailer (repeatable), e.g. --retailer walmart",
+    )
+    a.add_argument("--no-llm", action="store_true", help="skip AI re-ranking")
+    a.set_defaults(func=cmd_search)
 
     a = sub.add_parser("list", help="show everything being watched")
     a.set_defaults(func=cmd_list)
@@ -465,6 +572,21 @@ def build_parser() -> argparse.ArgumentParser:
 
     a = sub.add_parser("uninstall-cron", help="remove the scheduled runs")
     a.set_defaults(func=cmd_uninstall_cron)
+
+    a = sub.add_parser("app", help="open the tracker as a desktop window")
+    a.add_argument("--port", type=int, default=8787)
+    a.set_defaults(func=cmd_app)
+
+    a = sub.add_parser("serve", help="run the web UI without opening a window")
+    a.add_argument("--port", type=int, default=8787)
+    a.add_argument("--host", default="127.0.0.1")
+    a.add_argument("--no-open", action="store_true")
+    a.set_defaults(func=cmd_serve)
+
+    a = sub.add_parser(
+        "install-desktop", help="add Price Monitor to your applications menu (Linux)"
+    )
+    a.set_defaults(func=cmd_install_desktop)
 
     a = sub.add_parser("report", help="write an HTML dashboard of price history")
     a.add_argument("--out")
