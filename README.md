@@ -198,6 +198,22 @@ the normal extraction cascade, and asks Claude which results are actually that
 product rather than a case, cable, older model or multi-pack. Results show the
 retailer, live price and stock, so you pick with the numbers in front of you.
 
+**How exact does the name have to be?** Not very — brand and model is plenty.
+You can paste a whole product title straight off a shop page and it will be
+trimmed for you:
+
+| You paste | It searches for |
+|---|---|
+| `Logitech MX Master 3S - Wireless Performance Mouse with Ultra-fast Scrolling, Ergo, 8K DPI…` | `Logitech MX Master 3S` |
+| `Sony WH-1000XM5 Wireless Industry Leading Noise Cancelling Headphones with…` | `Sony WH-1000XM5` |
+| `BILLY Bookcase, white, 31 1/2x11x79 1/2"` | `BILLY Bookcase` |
+
+Searching a full title verbatim is what fails: engines answer a marketing
+sentence with the brand's home page rather than the product. The trimmed query
+is printed so you can see what was actually looked up, and if it guessed wrong,
+type the brand and model yourself — or paste the product link and skip search
+entirely.
+
 ---
 
 ## One product, every shop that sells it

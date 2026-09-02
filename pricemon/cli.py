@@ -53,9 +53,12 @@ def cmd_add(args) -> int:
     url = args.url
     if args.search:
         from .llm import LLM
-        from .search import rank_with_ai, search
+        from .search import normalize_query, rank_with_ai, search
 
-        print(f"searching for {args.search!r} ...")
+        used = normalize_query(args.search)
+        print(f"searching for {used!r} ...")
+        if used.lower() != args.search.strip().lower():
+            print(f"{DIM}  (shortened from what you gave){RESET}")
         results = search(args.search, cfg, retailers=args.retailer or None, limit=6)
         if not args.no_llm:
             results = rank_with_ai(args.search, results, LLM(cfg["llm"]))
@@ -156,11 +159,17 @@ def cmd_add(args) -> int:
 
 
 def cmd_search(args) -> int:
-    from .search import rank_with_ai, search
+    from .search import normalize_query, rank_with_ai, search
 
     store, cfg = _open(args)
     store.close()
-    print(f"searching for {args.query!r} ...")
+    used = normalize_query(args.query)
+    print(f"searching for {used!r} ...")
+    if used.lower() != args.query.strip().lower():
+        print(
+            f"{DIM}  (shortened from the {len(args.query)} characters you gave — "
+            f"brand and model is what finds a product){RESET}"
+        )
     results = search(args.query, cfg, retailers=args.retailer or None, limit=args.limit)
     if not results:
         print("no product pages found - try more specific words, or a brand name")
@@ -194,7 +203,12 @@ def cmd_compare(args) -> int:
 
     store, cfg = _open(args)
 
-    print(f"finding shops selling {args.query!r} ...")
+    from .search import normalize_query
+
+    used = normalize_query(args.query)
+    print(f"finding shops selling {used!r} ...")
+    if used.lower() != args.query.strip().lower():
+        print(f"{DIM}  (shortened from what you gave){RESET}")
     try:
         results = search(
             args.query, cfg, retailers=args.retailer or None, limit=args.shops * 2

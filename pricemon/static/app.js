@@ -604,10 +604,16 @@ function setMode(mode) {
   [...$("#add-mode").children].forEach((b) => b.classList.toggle("on", b.dataset.mode === mode));
 }
 
+let lastQueryUsed = null;
+
 function renderResults() {
   const box = $("#results");
   box.hidden = !results.length;
   box.innerHTML = "";
+  if (results.length && lastQueryUsed) {
+    box.append(el("div", { className: "hint", style: "padding:8px 11px 2px",
+      textContent: `Searched for "${lastQueryUsed}" — brand and model is what finds a product.` }));
+  }
   results.forEach((r) => {
     const node = el("div", { className: "result" + (picked && picked.url === r.url ? " on" : "") });
     node.onclick = () => { picked = r; renderResults(); };
@@ -631,6 +637,10 @@ $("#btn-search").onclick = async () => {
   try {
     const data = await api(`/api/search?q=${encodeURIComponent(q)}`);
     results = data.results;
+    // Long pasted titles are trimmed to brand + model before searching; say so,
+    // otherwise the results look like they ignored what was typed.
+    lastQueryUsed = data.query_used && data.query_used.toLowerCase() !== q.toLowerCase()
+      ? data.query_used : null;
     picked = results.find((r) => r.price != null) || results[0] || null;
     renderResults();
     if (!results.length) $("#results").innerHTML = '<div style="padding:14px;color:var(--ink-3);font-size:12.5px">Nothing found. Try the brand and model.</div>';

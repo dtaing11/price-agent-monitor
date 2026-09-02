@@ -101,6 +101,83 @@ class SearchResult:
         return f"{price:>12}  {self.retailer:<16} {self.title[:58]}{stock}"
 
 
+# Words that carry no search signal in a product title.
+FILLER = {
+    "with",
+    "and",
+    "for",
+    "the",
+    "a",
+    "an",
+    "featuring",
+    "includes",
+    "included",
+    "new",
+    "genuine",
+    "official",
+    "original",
+    "brand",
+    "authentic",
+    "premium",
+    "professional",
+    "ultimate",
+    "advanced",
+    "series",
+    "edition",
+    "version",
+    "model",
+    "inch",
+    "in",
+    "of",
+    "by",
+    "plus",
+}
+
+# Where a marketing description usually starts.
+SEPARATORS = re.compile(r"\s+[-–—|·:]\s+|[,;(\[]|\s{2,}")
+
+# "WH-1000XM5", "3S", "M2", "XM4" - a token mixing letters and digits is almost
+# always the model, and the model is what actually finds the product.
+MODEL_TOKEN = re.compile(r"^(?=.*\d)(?=.*[A-Za-z])[A-Za-z0-9][A-Za-z0-9\-/.]*$")
+
+
+def normalize_query(text: str, max_words: int = 8) -> str:
+    """Turn a pasted product title into something a search engine can use.
+
+    Shop titles are marketing sentences - "Logitech MX Master 3S - Wireless
+    Performance Mouse with Ultra-fast Scrolling, Ergo, 8K DPI, Track on
+    Glass..." - and searching one verbatim returns the brand's home page, not
+    the product. Brand plus model is what finds it.
+    """
+    text = " ".join(str(text or "").split())
+    if not text:
+        return ""
+
+    # 1. Cut at the first separator, as long as something useful is left.
+    head = SEPARATORS.split(text)[0].strip()
+    if len(head.split()) >= 2:
+        text = head
+
+    words = [w for w in text.split() if w.strip()]
+
+    # 2. Stop right after the model number, if one shows up early.
+    for i, word in enumerate(words[:6]):
+        cleaned = word.strip("\"'.,")
+        if i > 0 and MODEL_TOKEN.match(cleaned) and any(c.isdigit() for c in cleaned):
+            words = words[: i + 1]
+            break
+
+    # 3. Drop filler, keeping anything that looks like a model.
+    kept = [
+        w for w in words if w.lower().strip(".,") not in FILLER or MODEL_TOKEN.match(w)
+    ]
+    kept = kept or words
+
+    # 4. Keep it short; long queries are what caused the problem.
+    out = " ".join(kept[:max_words])
+    return out.strip(" -–—|,;:\"'") or text
+
+
 def _decode(href: str) -> str:
     """Unwrap the redirect URLs search engines wrap their results in."""
     if "uddg=" in href:  # DuckDuckGo
@@ -207,22 +284,51 @@ def find_urls(
             )
             domains.extend(rule.domains[:1] if rule else [name])
 
+    # A pasted product title is a marketing sentence; search it verbatim and you
+    # get the brand's home page. Try the trimmed form first, then progressively
+    # broader ones.
+    trimmed = normalize_query(query)
+    short = " ".join(trimmed.split()[:3])
+    phrasings = [trimmed]
+    if short and short != trimmed:
+        phrasings.append(short)
+    if query.strip() != trimmed:
+        phrasings.append(query.strip())
+
     if domains:
-        variants = [f"{query} " + " OR ".join(f"site:{d}" for d in domains)]
+        sites_filter = " " + " OR ".join(f"site:{d}" for d in domains)
+        variants = [f"{p}{sites_filter}" for p in phrasings]
     else:
-        variants = [query, f"{query} buy price", f"{query} {FALLBACK_SITES}"]
+        variants = [
+            *phrasings,
+            f"{trimmed} buy price",
+            f"{trimmed} {FALLBACK_SITES}",
+        ]
 
     answered = False
+    found: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    # Enough shops to choose from, without working the engines harder than
+    # needed - one phrasing usually supplies these on its own.
+    enough = min(limit, 4)
+
     for terms in variants:
         for engine, template in ENGINES:
             raw = _ask_engine(engine, template, terms, cfg)
             if not raw:
                 continue
             answered = True
-            found = _keep_products(raw, limit)
-            if found:
-                return found
+            for url, title in _keep_products(raw, limit):
+                if url not in seen:
+                    seen.add(url)
+                    found.append((url, title))
+            if len(found) >= enough:
+                return found[:limit]
+        if len(found) >= enough:
+            break
 
+    if found:
+        return found[:limit]
     if not answered:
         raise SearchBlocked(
             "every search engine declined to answer (usually a rate limit). "

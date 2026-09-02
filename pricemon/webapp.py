@@ -329,8 +329,12 @@ class Handler(BaseHTTPRequestHandler):
                     results = rank_with_ai(query, results, LLM(cfg["llm"]))
             except Exception as exc:  # noqa: BLE001 - surface it in the UI
                 return self._json({"error": f"search failed: {exc}"}, 502)
+            from .search import normalize_query
+
             return self._json(
                 {
+                    "query": query,
+                    "query_used": normalize_query(query),
                     "results": [
                         {
                             "title": r.title,
@@ -343,7 +347,7 @@ class Handler(BaseHTTPRequestHandler):
                             "method": r.method,
                         }
                         for r in results
-                    ]
+                    ],
                 }
             )
 
