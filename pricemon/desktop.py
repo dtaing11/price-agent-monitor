@@ -182,6 +182,8 @@ MACOS_PLIST = """<?xml version="1.0" encoding="UTF-8"?>
   <key>CFBundleExecutable</key><string>PriceMonitor</string>
   <key>CFBundleIconFile</key><string>pricemon.icns</string>
   <key>NSHighResolutionCapable</key><true/>
+  <key>LSArchitecturePriority</key>
+  <array><string>arm64</string><string>x86_64</string></array>
   <key>LSMinimumSystemVersion</key><string>10.13</string>
 </dict>
 </plist>
@@ -221,6 +223,15 @@ def _install_macos_app() -> Path:
         "# its window; quitting the window leaves the server running until you\n"
         "# quit the app.\n"
         f'cd "{Path(__file__).resolve().parent.parent}" || exit 1\n'
+        "\n"
+        "# A universal python launched from a bundle can start under Rosetta,\n"
+        "# and then every arm64 wheel in site-packages fails to load with\n"
+        '# "incompatible architecture". Pin the interpreter to the hardware\n'
+        "# so the app and the terminal use the same one.\n"
+        'if [ "$(sysctl -n hw.optional.arm64 2>/dev/null)" = "1" ] \\\n'
+        "   && /usr/bin/arch -arm64 /usr/bin/true 2>/dev/null; then\n"
+        f'  exec /usr/bin/arch -arm64 "{sys.executable}" -m pricemon app\n'
+        "fi\n"
         f'exec "{sys.executable}" -m pricemon app\n'
     )
     launcher.chmod(0o755)
