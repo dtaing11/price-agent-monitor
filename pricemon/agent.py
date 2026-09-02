@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from urllib.parse import urlparse
+
 import requests
 
 from . import extract as extract_mod
@@ -418,5 +420,47 @@ class Agent:
 
         from . import notify
 
-        notify.send(alerts, self.cfg["notify"])
+        notify.send(self._dedupe_groups(alerts, results), self.cfg["notify"])
         return results
+
+    def _dedupe_groups(
+        self, alerts: list[Alert], results: list[CheckResult]
+    ) -> list[Alert]:
+        """One product watched at five shops should send one notification.
+
+        When several shops in the same group fire the same kind of alert, only
+        the cheapest one is worth waking you up for - and it says how many other
+        shops it beat.
+        """
+        by_name = {r.product.name: r.product for r in results}
+        keep: list[Alert] = []
+        best: dict[tuple[str, str], tuple[Alert, float, int]] = {}
+
+        for alert in alerts:
+            product = by_name.get(alert.product)
+            group = product.group if product else None
+            if not group or alert.price is None:
+                keep.append(alert)
+                continue
+            key = (group, alert.kind)
+            price = alert.price
+            current = best.get(key)
+            if current is None:
+                best[key] = (alert, price, 1)
+            elif price < current[1]:
+                best[key] = (alert, price, current[2] + 1)
+            else:
+                best[key] = (current[0], current[1], current[2] + 1)
+
+        for alert, _price, count in best.values():
+            if count > 1:
+                product = by_name.get(alert.product)
+                shop = ""
+                if product:
+                    rule = sites.match(product.url)
+                    shop = rule.name if rule else urlparse(product.url).netloc
+                alert.message += f" — cheapest of {count} shops" + (
+                    f", at {shop}" if shop else ""
+                )
+            keep.append(alert)
+        return keep

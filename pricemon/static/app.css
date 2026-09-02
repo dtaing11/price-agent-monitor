@@ -184,6 +184,38 @@ select.sort { height: 32px; border: 1px solid var(--rule-2); border-radius: 7px;
 
 .cell-spark { height: 30px; }
 
+/* ---------- groups: one product, several shops ---------- */
+.row.group-row .who .name::after {
+  content: attr(data-shops);
+  font-family: var(--mono); font-size: 9.5px; letter-spacing: .06em;
+  text-transform: uppercase; color: var(--ink-3); margin-left: 8px;
+  border: 1px solid var(--rule-2); border-radius: 3px; padding: 1px 5px;
+  white-space: nowrap;
+}
+.legend { display: flex; flex-direction: column; margin-top: 10px; }
+.legend-row {
+  display: grid; grid-template-columns: 18px minmax(0,1fr) auto;
+  align-items: center; gap: 9px; padding: 7px 0;
+  border-bottom: 1px solid var(--rule); cursor: pointer;
+}
+.legend-row:last-child { border-bottom: 0; }
+.legend-row:hover .shop { color: var(--ink); }
+.legend-row .swatch { height: 2px; border-radius: 2px; background: var(--ink-3); }
+.legend-row.best .swatch { background: var(--drop); height: 3px; }
+.legend-row .shop {
+  font-size: 12.5px; color: var(--ink-2); white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis;
+}
+.legend-row.best .shop { color: var(--ink); font-weight: 550; }
+.legend-row .amount { font-family: var(--mono); font-size: 12.5px; font-variant-numeric: tabular-nums; }
+.legend-row.best .amount { color: var(--drop); font-weight: 600; }
+.legend-row .oos { color: var(--rise); }
+.saving {
+  font-family: var(--mono); font-size: 11px; color: var(--ink-3);
+  margin-top: 10px; padding-top: 9px; border-top: 1px solid var(--rule);
+}
+.saving b { color: var(--drop); font-weight: 600; }
+
 /* ---------- detail drawer ---------- */
 .side {
   width: 372px; flex-shrink: 0; border-left: 1px solid var(--rule);

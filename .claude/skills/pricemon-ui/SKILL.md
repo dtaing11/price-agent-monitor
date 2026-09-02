@@ -73,6 +73,18 @@ yet" without reading a single number. Keep it:
 - when low equals high, say "no range yet" rather than drawing a full bar that
   implies a range that does not exist.
 
+## Groups: one product, several shops
+
+A product tracked at five shops is **one row**, badged with the shop count, and
+priced at the cheapest. Opening it shows a comparison chart with one line per
+shop plus a legend sorted cheapest first.
+
+The chart obeys the same colour rule as everything else. The cheapest shop is
+`--drop` and solid; every other shop is `--ink-3`, told apart by **dash
+pattern**, never by inventing a palette. The legend swatch repeats the line's
+dash so the two read as one thing. Clicking a legend row drops into that one
+shop's own history.
+
 ## Writing
 
 Sentence case, plain verbs, no exclamation marks. Name things the way a shopper

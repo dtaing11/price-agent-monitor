@@ -13,7 +13,7 @@ from . import config as config_mod
 from . import cron as cron_mod
 from . import notify
 from .agent import Agent
-from .models import Product, utcnow
+from .models import Extraction, Product, utcnow
 from .money import format_price
 from .sites import canonical_url as sites_canonical
 from .storage import Store
@@ -180,6 +180,173 @@ def cmd_search(args) -> int:
         f"\ntrack one with:  pricemon add --search {args.query!r} --pick 1 --target 199"
     )
     return 0
+
+
+def _slugify(text: str, limit: int = 40) -> str:
+    import re
+
+    return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")[:limit] or "product"
+
+
+def cmd_compare(args) -> int:
+    """Track one product at every shop that sells it, and watch the cheapest."""
+    from .search import SearchBlocked, rank_with_ai, search
+
+    store, cfg = _open(args)
+
+    print(f"finding shops selling {args.query!r} ...")
+    try:
+        results = search(
+            args.query, cfg, retailers=args.retailer or None, limit=args.shops * 2
+        )
+    except SearchBlocked as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    if not args.no_llm:
+        from .llm import LLM
+
+        results = rank_with_ai(args.query, results, LLM(cfg["llm"]))
+
+    priced = [r for r in results if r.price is not None][: args.shops]
+    if not priced:
+        print("no shop with a readable price was found", file=sys.stderr)
+        for r in results[:5]:
+            print(f"  tried {r.url}  ({r.note})", file=sys.stderr)
+        return 1
+
+    group = args.name or _slugify(args.query)
+    existing = {p.url for p in store.group_members(group)}
+    added, skipped = [], []
+
+    for result in priced:
+        if result.url in existing:
+            skipped.append(result)
+            continue
+        name = f"{group}@{_slugify(result.retailer, 20)}"
+        n, suffix = name, 2
+        while store.get_product(name):
+            name = f"{n}-{suffix}"
+            suffix += 1
+        product = Product(
+            name=name,
+            url=result.url,
+            title=result.title,
+            group=group,
+            target_price=args.target,
+            currency=result.currency,
+            last_price=result.price,
+            last_in_stock=result.in_stock,
+            last_checked=utcnow(),
+        )
+        store.add_product(product)
+        store.record(
+            product,
+            Extraction(
+                price=result.price,
+                currency=result.currency,
+                in_stock=result.in_stock,
+                title=result.title,
+                method="search",
+            ),
+        )
+        added.append((product, result))
+
+    print(f"\n{BOLD}tracking {len(added)} shop(s) as group {group!r}{RESET}")
+    for product, result in added:
+        print(f"  {result.describe()}")
+    for result in skipped:
+        print(f"  {DIM}already tracked: {result.retailer}{RESET}")
+
+    cheapest = min(priced, key=lambda r: r.price or 1e15)
+    print(
+        f"\ncheapest right now: {format_price(cheapest.price, cheapest.currency)} "
+        f"at {cheapest.retailer}"
+    )
+    if args.target:
+        print(
+            f"you will be told when any of them reaches "
+            f"{format_price(args.target, cheapest.currency)}"
+        )
+    print(f"\nsee them together with:  pricemon group {group}")
+    return 0
+
+
+def cmd_group(args) -> int:
+    store, _cfg = _open(args)
+    if not args.name:
+        groups = store.groups()
+        if not groups:
+            print('no groups yet — make one with:  pricemon compare "product name"')
+            return 0
+        for group in groups:
+            members = store.group_members(group)
+            priced = [m for m in members if m.last_price is not None]
+            best = min(priced, key=lambda m: m.last_price or 1e15) if priced else None
+            best_txt = (
+                f"{format_price(best.last_price, best.currency)} at {_retailer(best)}"
+                if best
+                else "no prices yet"
+            )
+            print(f"{group:<28} {len(members)} shops · cheapest {best_txt}")
+        return 0
+
+    members = store.group_members(args.name)
+    if not members:
+        print(f"no group named {args.name!r}", file=sys.stderr)
+        return 1
+
+    priced = sorted(
+        (m for m in members if m.last_price is not None),
+        key=lambda m: m.last_price or 0,
+    )
+    unpriced = [m for m in members if m.last_price is None]
+    title = next((m.title for m in members if m.title), args.name)
+    print(f"{BOLD}{title[:70]}{RESET}")
+    print(f"{DIM}{len(members)} shops · group {args.name}{RESET}\n")
+
+    for i, m in enumerate(priced):
+        stats = store.price_stats(m)
+        low = (
+            f" · low {format_price(stats['lo'], m.currency)}"
+            if stats and stats["n"]
+            else ""
+        )
+        stock = (
+            ""
+            if m.last_in_stock is None
+            else ("" if m.last_in_stock else " · OUT OF STOCK")
+        )
+        mark = "→" if i == 0 else " "
+        target = (
+            f" · target {format_price(m.target_price, m.currency)}"
+            if m.target_price
+            else ""
+        )
+        print(
+            f" {mark} {format_price(m.last_price, m.currency):>12}  "
+            f"{_retailer(m):<16}{DIM}{low}{stock}{target}{RESET}"
+        )
+    for m in unpriced:
+        print(f"   {'—':>12}  {_retailer(m):<16}{DIM} no price read{RESET}")
+
+    if priced:
+        best = priced[0]
+        spread = (priced[-1].last_price or 0) - (best.last_price or 0)
+        if spread > 0:
+            print(
+                f"\ncheapest is {_retailer(best)} — "
+                f"{format_price(spread, best.currency)} less than the dearest"
+            )
+    return 0
+
+
+def _retailer(product: Product) -> str:
+    from urllib.parse import urlparse
+
+    from . import sites
+
+    rule = sites.match(product.url)
+    return rule.name if rule else urlparse(product.url).netloc.replace("www.", "")
 
 
 def cmd_list(args) -> int:
@@ -513,6 +680,25 @@ def build_parser() -> argparse.ArgumentParser:
     )
     a.add_argument("--no-llm", action="store_true", help="skip AI re-ranking")
     a.set_defaults(func=cmd_search)
+
+    a = sub.add_parser(
+        "compare",
+        parents=[common],
+        help="track one product at every shop that sells it, and watch the cheapest",
+    )
+    a.add_argument("query", help='product name, e.g. "sony wh-1000xm5"')
+    a.add_argument("--shops", type=int, default=6, help="how many shops to track")
+    a.add_argument("--target", type=float, help="alert when any shop reaches this")
+    a.add_argument("--name", help="group name (default: from the query)")
+    a.add_argument(
+        "--retailer", action="append", help="limit to a retailer (repeatable)"
+    )
+    a.add_argument("--no-llm", action="store_true")
+    a.set_defaults(func=cmd_compare)
+
+    a = sub.add_parser("group", help="compare the shops tracking one product")
+    a.add_argument("name", nargs="?", help="group name (omit to list all groups)")
+    a.set_defaults(func=cmd_group)
 
     a = sub.add_parser("list", help="show everything being watched")
     a.set_defaults(func=cmd_list)

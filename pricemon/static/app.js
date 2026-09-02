@@ -4,7 +4,7 @@
 
 const state = {
   products: [], alerts: [], job: {}, llm: "", sites: [],
-  selected: null, filter: "all", sort: "change", query: "", tab: "detail",
+  selected: null, selectedGroup: null, filter: "all", sort: "change", query: "", tab: "detail",
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -167,10 +167,108 @@ function bigChart(p) {
   return wrap;
 }
 
+/* One line per shop, so you can see who is actually cheapest over time.
+   Hue stays reserved for meaning: the cheapest shop is green, the rest are
+   ink, told apart by dash pattern rather than by a palette of colours. */
+const DASHES = ["", "4 3", "1 3", "6 3 1 3", "2 2", "8 4"];
+
+function groupChart(members) {
+  const wrap = el("div", { className: "chart-wrap" });
+  const withHistory = members.filter((m) => series(m).length >= 1);
+  if (!withHistory.length) {
+    wrap.append(el("p", { className: "hint", textContent: "No price readings yet." }));
+    return wrap;
+  }
+
+  const W = 336, H = 156, padL = 44, padR = 10, padT = 12, padB = 20;
+  const all = withHistory.flatMap((m) => series(m));
+  const prices = all.map((p) => p.price);
+  const targets = members.map((m) => m.target_price).filter((t) => t != null);
+  let lo = Math.min(...prices, ...targets), hi = Math.max(...prices, ...targets);
+  const margin = (hi - lo) * 0.12 || Math.max(hi * 0.04, 1);
+  lo -= margin; hi += margin;
+  const span = hi - lo || 1;
+
+  const times = all.map((p) => new Date(p.ts).getTime());
+  const t0 = Math.min(...times), tspan = (Math.max(...times) - t0) || 1;
+  const X = (t) => padL + ((t - t0) / tspan) * (W - padL - padR);
+  const Y = (v) => padT + (1 - (v - lo) / span) * (H - padT - padB);
+
+  const priced = members.filter((m) => m.last_price != null);
+  const best = priced.length
+    ? priced.reduce((a, b) => (a.last_price <= b.last_price ? a : b))
+    : null;
+  const currency = members.find((m) => m.currency)?.currency;
+
+  const grid = [lo + span * 0.1, lo + span * 0.5, hi - span * 0.1].map((v) =>
+    `<line x1="${padL}" x2="${W - padR}" y1="${Y(v).toFixed(1)}" y2="${Y(v).toFixed(1)}" stroke="var(--rule)"/>
+     <text x="${padL - 7}" y="${(Y(v) + 3).toFixed(1)}" text-anchor="end" font-size="8.5"
+       font-family="var(--mono)" fill="var(--ink-3)">${money(v, currency, 0)}</text>`).join("");
+
+  const target = targets.length
+    ? `<line x1="${padL}" x2="${W - padR}" y1="${Y(Math.min(...targets)).toFixed(1)}"
+         y2="${Y(Math.min(...targets)).toFixed(1)}" stroke="var(--drop)" stroke-dasharray="3 3"/>
+       <text x="${W - padR}" y="${(Y(Math.min(...targets)) - 4).toFixed(1)}" text-anchor="end"
+         font-size="8.5" font-family="var(--mono)" fill="var(--drop)">TARGET</text>` : "";
+
+  const lines = withHistory.map((m, i) => {
+    const pts = series(m);
+    const isBest = best && m.name === best.name;
+    const stroke = isBest ? "var(--drop)" : "var(--ink-3)";
+    const d = pts.length === 1
+      ? `M${X(new Date(pts[0].ts).getTime()).toFixed(1)},${Y(pts[0].price).toFixed(1)} h6`
+      : pts.map((p, k) => `${k ? "L" : "M"}${X(new Date(p.ts).getTime()).toFixed(1)},${Y(p.price).toFixed(1)}`).join(" ");
+    const last = pts.at(-1);
+    return `<path d="${d}" fill="none" stroke="${stroke}" stroke-width="${isBest ? 1.9 : 1.3}"
+        stroke-dasharray="${isBest ? "" : DASHES[i % DASHES.length]}" stroke-linejoin="round"
+        opacity="${isBest ? 1 : 0.75}" vector-effect="non-scaling-stroke"/>
+      <circle cx="${X(new Date(last.ts).getTime()).toFixed(1)}" cy="${Y(last.price).toFixed(1)}"
+        r="${isBest ? 2.8 : 2}" fill="${stroke}"/>`;
+  }).join("");
+
+  const day = (t) => new Date(t).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  wrap.innerHTML = `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Price by shop">
+    ${grid}${target}${lines}
+    <text x="${padL}" y="${H - 5}" font-size="8.5" font-family="var(--mono)" fill="var(--ink-3)">${day(t0)}</text>
+    <text x="${W - padR}" y="${H - 5}" text-anchor="end" font-size="8.5" font-family="var(--mono)"
+      fill="var(--ink-3)">${day(Math.max(...times))}</text>
+  </svg>`;
+  return wrap;
+}
+
 /* ---------------- ledger ---------------- */
+/* One product sold in several shops is one line in the ledger, not five. */
+function groupsOf(products) {
+  const byGroup = new Map();
+  const singles = [];
+  for (const p of products) {
+    if (!p.group) { singles.push(p); continue; }
+    if (!byGroup.has(p.group)) byGroup.set(p.group, []);
+    byGroup.get(p.group).push(p);
+  }
+  const entries = singles.slice();
+  for (const [group, members] of byGroup) {
+    if (members.length === 1) { entries.push(members[0]); continue; }
+    const priced = members.filter((m) => m.last_price != null);
+    const best = priced.length
+      ? priced.reduce((a, b) => (a.last_price <= b.last_price ? a : b))
+      : members[0];
+    entries.push({
+      ...best,
+      isGroup: true,
+      group,
+      members,
+      shops: members.length,
+      title: members.find((m) => m.title)?.title || group,
+      target_hit: members.some((m) => m.target_hit),
+    });
+  }
+  return entries;
+}
+
 function visible() {
   const q = state.query.trim().toLowerCase();
-  const list = state.products.filter((p) => {
+  const list = groupsOf(state.products).filter((p) => {
     if (q && !`${p.name} ${p.title || ""} ${p.retailer} ${p.url}`.toLowerCase().includes(q)) return false;
     if (state.filter === "hit") return p.target_hit;
     if (state.filter === "drops") return (p.change_pct ?? 0) < -0.01;
@@ -198,18 +296,30 @@ function thumb(p) {
 const monogram = (p) => el("div", { className: "thumb-fallback", textContent: (p.title || p.name).trim()[0].toUpperCase() });
 
 function row(p) {
+  const selected = p.isGroup ? state.selectedGroup === p.group : state.selected === p.name && !state.selectedGroup;
   const node = el("div", {
-    className: "row" + (state.selected === p.name ? " sel" : "") + (p.target_hit ? " hit" : "") + (p.active ? "" : " paused"),
+    className: "row" + (selected ? " sel" : "") + (p.target_hit ? " hit" : "")
+      + (p.active ? "" : " paused") + (p.isGroup ? " group-row" : ""),
     tabIndex: 0, role: "button",
   });
-  const open = () => { state.selected = p.name; state.tab = "detail"; render(); };
+  const open = () => {
+    state.selectedGroup = p.isGroup ? p.group : null;
+    state.selected = p.name;
+    state.tab = "detail";
+    render();
+  };
   node.onclick = open;
   node.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); } };
 
   const who = el("div", { className: "who" });
-  who.append(el("div", { className: "name", textContent: p.title || p.name, title: p.title || p.name }));
+  const name = el("div", { className: "name", textContent: p.title || p.name, title: p.title || p.name });
+  if (p.isGroup) name.dataset.shops = `${p.shops} shops`;
+  who.append(name);
   const sub = el("div", { className: "sub" });
-  sub.append(el("span", { textContent: p.retailer }), el("span", { textContent: when(p.last_checked) }));
+  sub.append(
+    el("span", { textContent: p.isGroup ? `cheapest at ${p.retailer}` : p.retailer }),
+    el("span", { textContent: when(p.last_checked) }),
+  );
   if (p.last_in_stock === false) sub.append(el("span", { className: "tag oos", textContent: "out of stock" }));
   if (p.target_hit) sub.append(el("span", { className: "tag hit", textContent: "at target" }));
   if (p.fail_count > 0) sub.append(el("span", { className: "tag", textContent: `${p.fail_count} failed` }));
@@ -255,7 +365,14 @@ function renderHeadline() {
   const hits = ps.filter((p) => p.target_hit).length;
   const fell = ps.filter((p) => (p.change_pct ?? 0) < -0.01).length;
   const bad = ps.filter((p) => p.fail_count > 0).length;
-  box.append(el("b", { textContent: `${ps.length} tracked` }));
+  // Count what the ledger actually shows: a product watched at five shops is
+  // one thing you are tracking, not five.
+  const things = groupsOf(ps).length;
+  const extraShops = ps.length - things;
+  box.append(el("b", { textContent: `${things} tracked` }));
+  if (extraShops > 0) {
+    box.append(el("span", { textContent: ` across ${ps.length} shops` }));
+  }
   if (hits) box.append(el("span", { textContent: " · " }), el("span", { className: "lede", textContent: `${hits} at or below target` }));
   else if (fell) box.append(el("span", { textContent: ` · ${fell} cheaper than when you started` }));
   else box.append(el("span", { textContent: " · nothing below target yet" }));
@@ -279,6 +396,11 @@ function drawer() {
 
   if (state.tab === "alerts") return renderFeed(side);
   if (state.tab === "sites") return renderShops(side);
+  if (state.selectedGroup) {
+    const members = state.products.filter((m) => m.group === state.selectedGroup);
+    if (members.length) return renderGroup(side, state.selectedGroup, members);
+    state.selectedGroup = null;
+  }
   if (!p) {
     side.append(el("p", { className: "hint", textContent: "Pick a row to see its history, and to change what it alerts on." }));
     if (state.job.log?.length) {
@@ -344,6 +466,59 @@ function drawer() {
   }
 }
 
+function renderGroup(side, group, members) {
+  const priced = members.filter((m) => m.last_price != null);
+  const best = priced.length
+    ? priced.reduce((a, b) => (a.last_price <= b.last_price ? a : b))
+    : null;
+  const dearest = priced.length
+    ? priced.reduce((a, b) => (a.last_price >= b.last_price ? a : b))
+    : null;
+  const title = members.find((m) => m.title)?.title || group;
+
+  side.append(el("h2", { textContent: title }));
+  side.append(el("div", { className: "url", textContent: `${members.length} shops · group ${group}` }));
+  side.append(groupChart(members));
+
+  const legend = el("div", { className: "legend" });
+  const ordered = [...members].sort((a, b) => (a.last_price ?? 1e15) - (b.last_price ?? 1e15));
+  ordered.forEach((m, i) => {
+    const isBest = best && m.name === best.name;
+    const rowEl = el("div", { className: "legend-row" + (isBest ? " best" : "") });
+    rowEl.onclick = () => { state.selectedGroup = null; state.selected = m.name; render(); };
+    const swatch = el("div", { className: "swatch" });
+    if (!isBest) swatch.style.background =
+      `repeating-linear-gradient(90deg, var(--ink-3) 0 3px, transparent 3px ${5 + (i % 3)}px)`;
+    rowEl.append(swatch);
+    rowEl.append(el("div", { className: "shop", textContent: m.retailer,
+                             title: `${m.retailer} — click for its own history` }));
+    const amount = el("div", { className: "amount" + (m.last_in_stock === false ? " oos" : ""),
+                               textContent: money(m.last_price, m.currency) });
+    rowEl.append(amount);
+    legend.append(rowEl);
+  });
+  side.append(legend);
+
+  if (best && dearest && dearest.last_price > best.last_price) {
+    const saving = dearest.last_price - best.last_price;
+    const note = el("div", { className: "saving" });
+    note.append(document.createTextNode("Cheapest at "));
+    note.append(el("b", { textContent: best.retailer }));
+    note.append(document.createTextNode(` — ${money(saving, best.currency)} less than ${dearest.retailer}`));
+    side.append(note);
+  }
+
+  const openBest = el("button", { className: "btn primary sm", textContent: "Open cheapest shop" });
+  openBest.onclick = () => best && window.open(best.url, "_blank", "noreferrer");
+  const checkAllInGroup = el("button", { className: "btn sm", textContent: "Check these shops" });
+  checkAllInGroup.onclick = async () => {
+    await api("/api/check", "POST", { names: members.map((m) => m.name) });
+    state.job.busy = true; renderHeadline(); poll();
+  };
+  side.append(el("div", { className: "actions" }, [openBest, checkAllInGroup]));
+  return undefined;
+}
+
 const MARKS = { target_hit: "◆", price_drop: "▼", price_rise: "▲", back_in_stock: "◇", out_of_stock: "○", error: "!", needs_check: "?" };
 function feedItem(a, showProduct = true) {
   const node = el("div", { className: "feed-item" });
@@ -398,6 +573,7 @@ async function api(path, method = "GET", body) {
 async function refresh() {
   Object.assign(state, await api("/api/state"));
   if (state.selected && !state.products.some((p) => p.name === state.selected)) state.selected = null;
+  if (state.selectedGroup && !state.products.some((p) => p.group === state.selectedGroup)) state.selectedGroup = null;
   render();
 }
 
@@ -517,7 +693,7 @@ catch { setTheme("light"); }
 document.addEventListener("keydown", (e) => {
   if (dlg.open) return;
   if (e.key === "/" && document.activeElement !== $("#search")) { e.preventDefault(); $("#search").focus(); }
-  if (e.key === "Escape") { state.selected = null; render(); }
+  if (e.key === "Escape") { state.selected = null; state.selectedGroup = null; render(); }
   if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "n") { e.preventDefault(); openAdd(); }
 });
 

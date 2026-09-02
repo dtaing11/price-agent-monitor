@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS products (
     url              TEXT NOT NULL,
     title            TEXT,
     image            TEXT,
+    group_name       TEXT,
     selector         TEXT,
     learned_selector TEXT,
     target_price     REAL,
@@ -63,7 +64,11 @@ class Store:
     def _migrate(self) -> None:
         """Add columns introduced after a database was first created."""
         have = {r["name"] for r in self.conn.execute("PRAGMA table_info(products)")}
-        for column, ddl in (("title", "TEXT"), ("image", "TEXT")):
+        for column, ddl in (
+            ("title", "TEXT"),
+            ("image", "TEXT"),
+            ("group_name", "TEXT"),
+        ):
             if column not in have:
                 self.conn.execute(f"ALTER TABLE products ADD COLUMN {column} {ddl}")
 
@@ -71,12 +76,16 @@ class Store:
     def add_product(self, p: Product) -> Product:
         cur = self.conn.execute(
             """INSERT INTO products
-               (name, url, selector, learned_selector, target_price, currency,
-                active, notes, created_at, last_checked, last_price, last_in_stock)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+               (name, url, title, image, group_name, selector, learned_selector,
+                target_price, currency, active, notes, created_at, last_checked,
+                last_price, last_in_stock, fail_count)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 p.name,
                 p.url,
+                p.title,
+                p.image,
+                p.group,
                 p.selector,
                 p.learned_selector,
                 p.target_price,
@@ -87,6 +96,7 @@ class Store:
                 p.last_checked,
                 p.last_price,
                 None if p.last_in_stock is None else int(p.last_in_stock),
+                p.fail_count,
             ),
         )
         self.conn.commit()
@@ -100,6 +110,7 @@ class Store:
             url=r["url"],
             title=r["title"],
             image=r["image"],
+            group=r["group_name"],
             selector=r["selector"],
             learned_selector=r["learned_selector"],
             target_price=r["target_price"],
@@ -131,14 +142,15 @@ class Store:
 
     def update_product(self, p: Product) -> None:
         self.conn.execute(
-            """UPDATE products SET url=?, title=?, image=?, selector=?,
-               learned_selector=?, target_price=?, currency=?, active=?, notes=?,
-               last_checked=?, last_price=?, last_in_stock=?, fail_count=?
-               WHERE id=?""",
+            """UPDATE products SET url=?, title=?, image=?, group_name=?,
+               selector=?, learned_selector=?, target_price=?, currency=?,
+               active=?, notes=?, last_checked=?, last_price=?, last_in_stock=?,
+               fail_count=? WHERE id=?""",
             (
                 p.url,
                 p.title,
                 p.image,
+                p.group,
                 p.selector,
                 p.learned_selector,
                 p.target_price,
@@ -158,6 +170,22 @@ class Store:
         cur = self.conn.execute("DELETE FROM products WHERE name = ?", (name,))
         self.conn.commit()
         return cur.rowcount > 0
+
+    def group_members(self, group: str) -> list[Product]:
+        rows = self.conn.execute(
+            "SELECT * FROM products WHERE group_name = ? ORDER BY name", (group,)
+        )
+        return [self._row_to_product(r) for r in rows]
+
+    def groups(self) -> list[str]:
+        return [
+            r["group_name"]
+            for r in self.conn.execute(
+                """SELECT group_name FROM products
+                   WHERE group_name IS NOT NULL AND group_name != ''
+                   GROUP BY group_name ORDER BY group_name"""
+            )
+        ]
 
     # -- observations -----------------------------------------------------
     def record(

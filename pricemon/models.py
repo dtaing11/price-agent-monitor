@@ -19,6 +19,7 @@ class Product:
     url: str
     id: int | None = None
     title: str | None = None  # the product's own name, as the page states it
+    group: str | None = None  # same product, tracked at several shops
     image: str | None = None  # product photo URL, for the list view
     selector: str | None = None  # user-pinned, always tried first
     learned_selector: str | None = None  # discovered by the LLM, self-healing

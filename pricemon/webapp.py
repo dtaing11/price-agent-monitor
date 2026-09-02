@@ -132,6 +132,7 @@ def _product_payload(store: Store, product: Product, history_limit: int = 400) -
         "name": product.name,
         "title": product.title or product.name,
         "image": product.image,
+        "group": product.group,
         "url": product.url,
         "selector": product.selector,
         "learned_selector": product.learned_selector,
@@ -375,6 +376,7 @@ class Handler(BaseHTTPRequestHandler):
                 url=url,
                 title=extraction.title,
                 image=extraction.image,
+                group=(body.get("group") or "").strip() or None,
                 selector=(body.get("selector") or "").strip() or None,
                 learned_selector=(
                     extraction.selector

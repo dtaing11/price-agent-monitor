@@ -127,6 +127,8 @@ It is a local app — it serves on 127.0.0.1, stores everything in
 | Command | What it does |
 |---|---|
 | `pricemon add --search "product name" --pick 1 --target N` | find the product by name and watch it |
+| `pricemon compare "product name" --target N` | track it at every shop that sells it |
+| `pricemon group [name]` | compare the shops for one product |
 | `pricemon search "product name"` | show matching product pages with live prices |
 | `pricemon add <url> [--target N] [--name x] [--selector 'css']` | watch a page you already have a link to |
 | `pricemon app` / `pricemon serve` | the desktop tracker / the UI alone |
@@ -157,6 +159,33 @@ Search finds candidate product pages, opens each one, reads its real price with
 the normal extraction cascade, and asks Claude which results are actually that
 product rather than a case, cable, older model or multi-pack. Results show the
 retailer, live price and stock, so you pick with the numbers in front of you.
+
+---
+
+## One product, every shop that sells it
+
+```bash
+pricemon compare "logitech mx master 3s" --target 75
+pricemon group logitech-mx-master-3s
+```
+
+`compare` searches, prices each shop, and tracks them all as one group — big
+retailers and niche ones alike (in testing: Walmart, Office Depot and
+Logitech's own store). You then watch a single line in the app that shows the
+cheapest price, and the drawer draws **one line per shop** so you can see who
+is actually cheapest over time, not just today.
+
+```
+MX Master 3S Bluetooth Edition            4 shops
+  → $80.99  Walmart          · low $80.99 · target $75.00
+    $84.99  logitech.com
+    $99.99  officedepot.com
+   $109.99  logitech.com
+cheapest is Walmart — $29.00 less than the dearest
+```
+
+If several shops cross your target at once you get **one** notification, naming
+the cheapest and how many it beat — not one per shop.
 
 ---
 
