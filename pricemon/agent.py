@@ -11,7 +11,13 @@ import requests
 
 from . import extract as extract_mod
 from . import sites
-from .fetcher import FetchError, browser_is_available, fetch, fetch_rendered
+from .fetcher import (
+    FetchError,
+    browser_is_available,
+    fetch,
+    fetch_rendered,
+    render_page,
+)
 from .llm import LLM, LLMUnavailable
 from .models import Alert, CheckResult, Extraction, Product, utcnow
 from .money import format_price
@@ -44,6 +50,18 @@ class Agent:
             self._local.session = session
         return session
 
+    def _shot_dir(self) -> str | None:
+        """Where page screenshots go, when the model is allowed to look at one.
+
+        Kept beside the database rather than in a temp dir so a screenshot is
+        still there when you want to see what the agent saw.
+        """
+        if not self.llm.available:
+            return None
+        from . import config as config_mod
+
+        return str(config_mod.home() / "shots")
+
     def log(self, msg: str) -> None:
         """Collect output per product, so parallel checks do not interleave."""
         buffer = getattr(self._local, "buffer", None)
@@ -71,11 +89,18 @@ class Agent:
             and browser_is_available()
         )
 
+        rendered = None
         if render_first:
             try:
                 with self._heavy:
-                    html, final_url = fetch_rendered(url, self.cfg["fetch"])
-                self.log("  rendered in a headless browser")
+                    rendered = render_page(
+                        url, self.cfg["fetch"], screenshot_dir=self._shot_dir()
+                    )
+                html, final_url = rendered.html, rendered.url
+                self.log(
+                    f"  rendered in a headless browser "
+                    f"({len(rendered.prices)} price-like elements measured)"
+                )
             except FetchError as exc:
                 self.log(f"  browser fetch failed ({exc}); falling back to plain HTTP")
                 html, final_url = fetch(url, self.cfg["fetch"], session=self.session)
@@ -109,7 +134,11 @@ class Agent:
         ):
             self.log("  no price in the raw HTML - re-fetching with a browser")
             try:
-                html, final_url = fetch_rendered(url, self.cfg["fetch"])
+                with self._heavy:
+                    rendered = render_page(
+                        url, self.cfg["fetch"], screenshot_dir=self._shot_dir()
+                    )
+                html, final_url = rendered.html, rendered.url
             except FetchError as exc:
                 self.log(f"  browser fetch failed: {exc}")
             else:
@@ -120,6 +149,21 @@ class Agent:
                     url=final_url,
                 )
 
+        # What the browser measured beats what the markup implies: it knows
+        # which price is crossed out and which is only there for screen
+        # readers. Fold it in as another candidate before deciding to pay for
+        # a model call.
+        if rendered is not None:
+            looked = extract_mod.from_rendered(rendered)
+            if looked:
+                candidates.append(looked)
+                candidates.sort(key=lambda e: -e.confidence)
+                if looked.confidence > best.confidence:
+                    self.log(
+                        f"  the rendered page reads {looked.price} ({looked.note[:60]})"
+                    )
+                    best = looked
+
         needs_help = (not best.ok) or best.confidence < LLM_CONFIDENCE_FLOOR
         if needs_help and use_llm and self.llm.available:
             self.log(
@@ -128,7 +172,9 @@ class Agent:
             )
             try:
                 with self._heavy:
-                    llm_ex = self.llm.extract(html, final_url, candidates)
+                    llm_ex = self.llm.extract(
+                        html, final_url, candidates, rendered=rendered
+                    )
             except (LLMUnavailable, Exception) as exc:  # noqa: BLE001
                 self.log(f"  LLM extraction unavailable: {exc}")
             else:
@@ -146,8 +192,31 @@ class Agent:
                     if llm_ex.in_stock is None:
                         llm_ex.in_stock = best.in_stock
                     llm_ex.title = llm_ex.title or best.title
+                    llm_ex.image = llm_ex.image or best.image
                     candidates.insert(0, llm_ex)
                     best = llm_ex
+                elif (
+                    llm_ex.confidence >= 0.8 and best.confidence < LLM_CONFIDENCE_FLOOR
+                ):
+                    # "There is nothing to buy here" is an answer, not a
+                    # failure to answer. A confident no beats a weak guess -
+                    # otherwise an unavailable product keeps the price of
+                    # whatever the heuristics scraped off a recommendation.
+                    self.log(f"  Claude reads no purchasable price: {llm_ex.note[:70]}")
+                    best = Extraction(
+                        price=None,
+                        currency=best.currency,
+                        in_stock=(
+                            llm_ex.in_stock
+                            if llm_ex.in_stock is not None
+                            else best.in_stock
+                        ),
+                        title=llm_ex.title or best.title,
+                        image=llm_ex.image or best.image,
+                        method="llm",
+                        confidence=llm_ex.confidence,
+                        note=llm_ex.note,
+                    )
         return best, candidates
 
     # ------------------------------------------------------------------
@@ -361,6 +430,11 @@ class Agent:
             return self._record_failure(p, f"{type(exc).__name__}: {exc}")
 
         if not ex.ok:
+            # A page with no price because the item is unavailable is not a
+            # broken scrape - it is news. Record it as an observation and say
+            # so, rather than counting it against the product as a failure.
+            if ex.in_stock is False:
+                return self._record_out_of_stock(p, ex)
             return self._record_failure(p, "no price found on page")
 
         suspect = self._implausible(p, ex)
@@ -413,6 +487,41 @@ class Agent:
         )
         return CheckResult(
             product=p, extraction=ex, alerts=alerts, log=list(lines or [])
+        )
+
+    def _record_out_of_stock(self, p: Product, ex: Extraction) -> CheckResult:
+        """The item is unavailable, so there is no price to read. Note it."""
+        alerts: list[Alert] = []
+        label = p.title or p.name
+        if p.last_in_stock is not False and self.cfg["alerts"].get(
+            "notify_stock_change", True
+        ):
+            alerts.append(
+                Alert(
+                    kind="out_of_stock",
+                    product=p.name,
+                    price=None,
+                    currency=p.currency,
+                    url=p.url,
+                    message=f"{label} is no longer available to buy",
+                )
+            )
+
+        self.store.record(p, ex)
+        p.title = ex.title or p.title
+        p.image = ex.image or p.image
+        p.last_in_stock = False
+        p.last_checked = utcnow()
+        p.fail_count = 0  # the page was read fine; there is simply nothing to buy
+        self.store.update_product(p)
+        if alerts:
+            self.store.record_alerts(p, alerts)
+        self.log("  no purchasable price — the item is unavailable")
+        return CheckResult(
+            product=p,
+            extraction=ex,
+            alerts=alerts,
+            log=list(getattr(self._local, "buffer", None) or []),
         )
 
     def _record_failure(self, p: Product, error: str) -> CheckResult:

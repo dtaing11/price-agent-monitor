@@ -515,6 +515,90 @@ def from_site_rule(soup: BeautifulSoup, url: str) -> Extraction | None:
     return None
 
 
+# Wording that turns a number on a product page into something other than the
+# price: finance offers, bundle totals, warranties, per-unit breakdowns.
+NOT_THE_PRICE = (
+    "total price",
+    "total:",
+    "off instantly",
+    "upon approval",
+    "protection plan",
+    "protect:",
+    "/month",
+    "per month",
+    "a month",
+    "/count",
+    "/feet",
+    "/ounce",
+    "per ounce",
+    "shipped by",
+    "free delivery",
+    "shipping",
+    "delivery",
+    "list:",
+    "was ",
+    "rrp",
+    "msrp",
+    "you save",
+    "trade-in",
+    "gift card",
+    "coupon",
+    "subscribe",
+)
+
+
+# --------------------------------------------------------------------------
+# Strategy: what the page actually looks like, measured in a browser
+# --------------------------------------------------------------------------
+def from_rendered(page: Any) -> Extraction | None:
+    """Read the price off the rendered page rather than out of the markup.
+
+    The browser knows what the markup cannot say: this price is struck
+    through, that one is only announced to screen readers, this one is drawn
+    at 28px near the top. That is how a person tells the price from the "was"
+    price, and it settles pages where the markup offers a dozen numbers with
+    no way to rank them.
+    """
+    seen = page.visible_prices()
+    if not seen:
+        return None
+
+    for candidate in seen[:6]:
+        # Prominence alone cannot tell a price from a promotion, so read the
+        # words around it too. A page that only offers these is a page whose
+        # real price never rendered - better to say nothing and let the markup
+        # and embedded JSON answer than to report a finance offer as the price.
+        context = f"{candidate.context} {candidate.text}".lower()
+        if any(phrase in context for phrase in NOT_THE_PRICE):
+            continue
+        if candidate.prominence < 0.45:
+            continue
+        price, currency = parse_price(candidate.text)
+        if price is None or price <= 0:
+            continue
+        note = "read from the rendered page"
+        if candidate.screen_reader:
+            note += " (the shop's own accessible price)"
+        elif candidate.font_size:
+            note += f" ({candidate.font_size}px"
+            note += (
+                ", bold)" if candidate.font_weight in ("bold", "700", "800") else ")"
+            )
+        return Extraction(
+            price=price,
+            currency=currency,
+            image=page.product_image(),
+            method="rendered",
+            # Capped below a pinned selector, above the markup guesses: the
+            # browser is right about appearance, not about which product a
+            # page is really selling.
+            confidence=min(0.88, 0.45 + candidate.prominence * 0.45),
+            selector=candidate.selector,
+            note=note,
+        )
+    return None
+
+
 # --------------------------------------------------------------------------
 # Strategy: product JSON embedded in the page (Next.js, Nuxt, Redux dumps)
 # --------------------------------------------------------------------------

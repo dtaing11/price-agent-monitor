@@ -12,6 +12,7 @@ import logging
 import random
 import threading
 import time
+from pathlib import Path
 from urllib import robotparser
 from urllib.parse import urlparse
 
@@ -126,6 +127,80 @@ def browser_is_available() -> bool:
         return True
     except ImportError:
         return False
+
+
+def render_page(url: str, cfg: dict, screenshot_dir: str | None = None):
+    """Open the page in a real browser and report what it looks like.
+
+    Returns a RenderedPage: the HTML, plus every price-like string with its
+    computed style and position, the images ranked as a shopper would rank
+    them, and optionally a screenshot. Markup alone cannot say which price is
+    crossed out or which picture is the product; the browser can.
+    """
+    from .vision import IMAGE_PROBE_JS, PRICE_PROBE_JS, RenderedPage, SeenPrice
+
+    try:
+        from playwright.sync_api import (
+            sync_playwright,  # type: ignore[import-not-found]
+        )
+    except ImportError as exc:
+        raise BrowserUnavailable(
+            "browser mode needs Playwright: pip install playwright && "
+            "python3 -m playwright install chromium"
+        ) from exc
+
+    _throttle(url, float(cfg.get("min_delay_per_domain", 3.0)))
+    timeout_ms = int(float(cfg.get("timeout", 25)) * 1000)
+    shot_path: str | None = None
+
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(
+            args=["--disable-blink-features=AutomationControlled", "--no-sandbox"]
+        )
+        try:
+            context = browser.new_context(
+                user_agent=cfg["user_agent"],
+                locale="en-US",
+                viewport={"width": 1366, "height": 900},
+            )
+            page = context.new_page()
+            page.goto(url, timeout=timeout_ms, wait_until="domcontentloaded")
+            try:
+                page.wait_for_selector(
+                    "[class*=price], [id*=price], [data-testid*=price]",
+                    timeout=min(timeout_ms, 8000),
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("no price selector appeared on %s: %s", url, exc)
+            page.wait_for_timeout(500)
+
+            html, final = page.content(), page.url
+            try:
+                raw_prices = page.evaluate(PRICE_PROBE_JS) or []
+                raw_images = page.evaluate(IMAGE_PROBE_JS) or []
+            except Exception as exc:  # noqa: BLE001 - probes are a bonus
+                logger.debug("page probe failed on %s: %s", url, exc)
+                raw_prices, raw_images = [], []
+
+            if screenshot_dir:
+                shot = Path(screenshot_dir) / f"page-{abs(hash(final)) % 10**8}.png"
+                shot.parent.mkdir(parents=True, exist_ok=True)
+                try:
+                    # The part a shopper looks at, not the whole endless page.
+                    page.screenshot(path=str(shot), full_page=False)
+                    shot_path = str(shot)
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("screenshot failed on %s: %s", url, exc)
+        finally:
+            browser.close()
+
+    prices = [
+        SeenPrice(**{k: v for k, v in item.items() if k in SeenPrice.__annotations__})
+        for item in raw_prices
+    ]
+    return RenderedPage(
+        html=html, url=final, prices=prices, images=raw_images, screenshot=shot_path
+    )
 
 
 def fetch_rendered(url: str, cfg: dict) -> tuple[str, str]:

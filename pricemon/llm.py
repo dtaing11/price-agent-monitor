@@ -14,11 +14,14 @@ Backends
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import re
 import shutil
 import subprocess
+from pathlib import Path
+from typing import Any
 
 from bs4 import BeautifulSoup, Comment
 
@@ -39,6 +42,8 @@ Rules:
 - css_selector must be a selector that resolves to the element holding this
   price on this page, stable enough to reuse on the next visit. Append @attr
   (e.g. 'meta[itemprop="price"]@content') when the value lives in an attribute.
+- image_url, if you can tell, is the main product photo (not a logo, badge,
+  banner or a picture of a different product).
 - confidence is 0.0-1.0, your honest read.
 - If there is no purchasable price on the page, set price to null.
 
@@ -46,14 +51,31 @@ URL: {url}
 
 Candidates the deterministic extractors already found (may be wrong or empty):
 {candidates}
-
+{visual}
 PAGE:
 {page}
 
 Reply with ONLY a JSON object, no prose and no markdown fences:
 {{"price": number|null, "currency": string|null, "in_stock": true|false|null,
-  "title": string|null, "css_selector": string|null, "confidence": number,
-  "reasoning": string}}"""
+  "title": string|null, "css_selector": string|null, "image_url": string|null,
+  "confidence": number, "reasoning": string}}"""
+
+# What the browser measured, handed over as a table. This is the part markup
+# cannot express: which price is crossed out, which is screen-reader-only, how
+# big each one is drawn and where it sits on the page.
+VISUAL_BLOCK = """
+HOW THE PAGE ACTUALLY RENDERS (measured in a real browser - trust this over the
+markup below, since it accounts for CSS the HTML alone does not show):
+{table}
+
+Notes on reading that table:
+- "crossed out" is a was/list price. Never report it as the price.
+- "screen-reader text" is a shop's own accessible copy of a value. It is often
+  the cleanest form of the real price, especially where the visible price is
+  split across several elements ($ / 859 / 99).
+- Bigger text higher on the page is usually the price being sold right now.
+- The rendered product photo the browser ranked first: {image}
+{shot}"""
 
 CURRENCY_RE = re.compile(
     r"[$€£¥₹₩]|\b(?:USD|EUR|GBP|JPY|CAD|AUD|INR|SEK|PLN|CHF)\b", re.IGNORECASE
@@ -176,7 +198,11 @@ class LLM:
         return "disabled"
 
     # -- backends ---------------------------------------------------------
-    def _ask_cli(self, prompt: str) -> str:
+    def _ask_cli(self, prompt: str, screenshot: str | None = None) -> str:
+        # Tools stay off by default - this is a read-and-answer task. The one
+        # exception is a screenshot: Read is what lets the CLI open the image,
+        # so it is allowed only when there is an image to look at.
+        tools = "Read" if screenshot else ""
         cmd = [
             "claude",
             "-p",
@@ -186,7 +212,7 @@ class LLM:
             "--model",
             self.model,
             "--allowed-tools",
-            "",
+            tools,
         ]
         proc = subprocess.run(
             cmd,
@@ -209,16 +235,33 @@ class LLM:
             )
         return payload.get("result", "")
 
-    def _ask_api(self, prompt: str) -> str:
+    def _ask_api(self, prompt: str, screenshot: str | None = None) -> str:
         try:
             import anthropic
         except ImportError as exc:
             raise LLMUnavailable("anthropic SDK not installed") from exc
+
+        content: list[Any] = []
+        if screenshot and Path(screenshot).is_file():
+            content.append(
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "image/png",
+                        "data": base64.standard_b64encode(
+                            Path(screenshot).read_bytes()
+                        ).decode(),
+                    },
+                }
+            )
+        content.append({"type": "text", "text": prompt})
+
         client = anthropic.Anthropic()
         resp = client.messages.create(
             model=self.model,
             max_tokens=2000,
-            messages=[{"role": "user", "content": prompt}],
+            messages=[{"role": "user", "content": content}],
         )
         return "".join(
             str(getattr(b, "text", ""))
@@ -227,7 +270,21 @@ class LLM:
         )
 
     # -- public -----------------------------------------------------------
-    def extract(self, html: str, url: str, candidates: list[Extraction]) -> Extraction:
+    def extract(
+        self,
+        html: str,
+        url: str,
+        candidates: list[Extraction],
+        rendered=None,
+    ) -> Extraction:
+        """Ask Claude for the price, given everything we know about the page.
+
+        `rendered` is an optional RenderedPage from the headless browser. When
+        present the model is told how the page actually draws - which prices are
+        crossed out or screen-reader-only, how large each is, where it sits -
+        and is shown a screenshot. Markup alone cannot express any of that, and
+        it is exactly what separates the price from the "was" price.
+        """
         if not self.available:
             raise LLMUnavailable("no LLM backend available")
 
@@ -240,15 +297,31 @@ class LLM:
             or "- none"
         )
 
+        visual = ""
+        screenshot = None
+        if rendered is not None and rendered.prices:
+            screenshot = rendered.screenshot
+            visual = VISUAL_BLOCK.format(
+                table=rendered.summarise(),
+                image=rendered.product_image() or "none found",
+                shot=(
+                    f"- A screenshot of the page is at {screenshot} — open it and "
+                    "look at the price before answering."
+                    if screenshot
+                    else ""
+                ),
+            )
+
         prompt = PROMPT.format(
             url=url,
             candidates=cand_text,
+            visual=visual,
             page=condense(html, int(self.cfg.get("max_html_chars", 40000))),
         )
         raw = (
-            self._ask_cli(prompt)
+            self._ask_cli(prompt, screenshot=screenshot)
             if self.backend == "claude_cli"
-            else self._ask_api(prompt)
+            else self._ask_api(prompt, screenshot=screenshot)
         )
         data = _extract_json(raw)
         if not data:
@@ -265,6 +338,7 @@ class LLM:
             currency=(data.get("currency") or None),
             in_stock=data.get("in_stock"),
             title=data.get("title"),
+            image=(data.get("image_url") or None),
             method="llm",
             confidence=float(data.get("confidence") or 0.7),
             selector=data.get("css_selector") or None,

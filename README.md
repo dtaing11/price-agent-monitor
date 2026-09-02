@@ -294,6 +294,33 @@ Each page runs through a cascade, best evidence first:
    as do struck-through `<del>` originals.
 9. **Claude** — only if everything above lands below a confidence floor of 0.75.
 
+### Reading the page the way you see it
+
+Markup cannot say which price is crossed out, which is only announced to screen
+readers, or which picture is the product rather than the shop's logo — that
+lives in the CSS and in where things land on screen. When a page is rendered in
+a browser, the agent asks it directly: for every price-like string it records
+the font size, weight, whether it is struck through, whether it is visible at
+all, and its position; for every image, its real size and place on the page.
+
+That yields a short, high-signal table instead of a megabyte of markup, and it
+is shared by both readers:
+
+- **The deterministic scorer** uses it to rank candidates, so a struck-through
+  "was" price and a hidden element can never win.
+- **Claude** gets the same table *plus a screenshot of the page*, so it is
+  looking at the rendered page rather than guessing from tags.
+
+Two rules earn their keep here. A shop's screen-reader price
+(`<span class="a-offscreen">$859.99</span>`) is often the cleanest form of the
+real price, especially when the visible one is split across elements — so it is
+trusted rather than discarded as "hidden". And when the only things on screen
+are finance offers, bundle totals and protection plans, the visual reader
+declines instead of reporting one as the price.
+
+Screenshots are kept in `~/.price-monitor/shots/` so you can see what the agent
+saw.
+
 ### Sites that hide prices from plain HTTP
 
 Amazon and Target send an empty price skeleton to anything that is not a
