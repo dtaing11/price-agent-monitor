@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Run the agent from anywhere:  ln -s "$PWD/bin/pricemon" ~/.local/bin/pricemon
+set -euo pipefail
+src="${BASH_SOURCE[0]}"
+while [ -L "$src" ]; do
+  dir="$(cd -P "$(dirname "$src")" && pwd)"
+  src="$(readlink "$src")"
+  [[ "$src" != /* ]] && src="$dir/$src"
+done
+project="$(cd -P "$(dirname "$src")/.." && pwd)"
+cd "$project"
+exec "${PRICEMON_PYTHON:-python3}" -m pricemon "$@"
