@@ -8,14 +8,13 @@ from __future__ import annotations
 
 import random
 import time
-import urllib.robotparser as robotparser
-from typing import Dict, Optional, Tuple
+from urllib import robotparser
 from urllib.parse import urlparse
 
 import requests
 
-_last_hit: Dict[str, float] = {}
-_robots: Dict[str, Optional[robotparser.RobotFileParser]] = {}
+_last_hit: dict[str, float] = {}
+_robots: dict[str, robotparser.RobotFileParser | None] = {}
 
 
 class FetchError(RuntimeError):
@@ -38,23 +37,26 @@ def _accept_encoding() -> str:
     """
     encodings = ["gzip", "deflate"]
     try:
-        import brotli  # noqa: F401
+        import brotli  # type: ignore[import-not-found] # noqa: F401
+
         encodings.append("br")
     except ImportError:
         try:
-            import brotlicffi  # noqa: F401
+            import brotlicffi  # type: ignore[import-not-found] # noqa: F401
+
             encodings.append("br")
         except ImportError:
             pass
     try:
-        import zstandard  # noqa: F401
+        import zstandard  # type: ignore[import-not-found] # noqa: F401
+
         encodings.append("zstd")
     except ImportError:
         pass
     return ", ".join(encodings)
 
 
-def _headers(user_agent: str) -> Dict[str, str]:
+def _headers(user_agent: str) -> dict[str, str]:
     return {
         "User-Agent": user_agent,
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -77,16 +79,18 @@ def _robots_allows(url: str, user_agent: str, timeout: float) -> bool:
         rp = robotparser.RobotFileParser()
         robots_url = f"{parsed.scheme}://{parsed.netloc}/robots.txt"
         try:
-            resp = requests.get(robots_url, headers=_headers(user_agent), timeout=timeout)
+            resp = requests.get(
+                robots_url, headers=_headers(user_agent), timeout=timeout
+            )
             if resp.status_code >= 400:
-                _robots[host] = None          # no usable robots.txt -> allow
+                _robots[host] = None  # no usable robots.txt -> allow
             else:
                 rp.parse(resp.text.splitlines())
                 _robots[host] = rp
         except requests.RequestException:
             _robots[host] = None
-    rp = _robots[host]
-    return True if rp is None else rp.can_fetch(user_agent, url)
+    cached = _robots[host]
+    return True if cached is None else cached.can_fetch(user_agent, url)
 
 
 def _throttle(url: str, min_delay: float) -> None:
@@ -99,21 +103,27 @@ def _throttle(url: str, min_delay: float) -> None:
     _last_hit[host] = time.time()
 
 
-def fetch(url: str, cfg: dict, session: Optional[requests.Session] = None) -> Tuple[str, str]:
+def fetch(
+    url: str, cfg: dict, session: requests.Session | None = None
+) -> tuple[str, str]:
     """Return (html, final_url).  Raises FetchError on give-up."""
     ua = cfg["user_agent"]
     timeout = cfg["timeout"]
 
     if cfg.get("respect_robots", True) and not _robots_allows(url, ua, timeout):
-        raise RobotsDenied(f"robots.txt disallows {url} (set fetch.respect_robots: false to override)")
+        raise RobotsDenied(
+            f"robots.txt disallows {url} (set fetch.respect_robots: false to override)"
+        )
 
     sess = session or requests.Session()
-    last_err: Optional[str] = None
+    last_err: str | None = None
 
     for attempt in range(1, int(cfg.get("max_retries", 3)) + 1):
         _throttle(url, float(cfg.get("min_delay_per_domain", 3.0)))
         try:
-            resp = sess.get(url, headers=_headers(ua), timeout=timeout, allow_redirects=True)
+            resp = sess.get(
+                url, headers=_headers(ua), timeout=timeout, allow_redirects=True
+            )
         except requests.RequestException as exc:
             last_err = f"{type(exc).__name__}: {exc}"
         else:
@@ -125,8 +135,10 @@ def fetch(url: str, cfg: dict, session: Optional[requests.Session] = None) -> Tu
                     resp.encoding = resp.apparent_encoding or resp.encoding
                 return resp.text, resp.url
             if resp.status_code in (429, 500, 502, 503, 504):
-                retry_after = resp.headers.get("Retry-After")
-                delay = float(retry_after) if (retry_after or "").isdigit() else 2.0 * attempt ** 2
+                retry_after = resp.headers.get("Retry-After") or ""
+                delay = (
+                    float(retry_after) if retry_after.isdigit() else 2.0 * attempt**2
+                )
                 last_err = f"HTTP {resp.status_code}"
                 time.sleep(min(delay, 60))
                 continue

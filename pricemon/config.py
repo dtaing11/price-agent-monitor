@@ -5,11 +5,11 @@ from __future__ import annotations
 import copy
 import os
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any
 
-import yaml
+import yaml  # type: ignore[import-untyped]
 
-DEFAULTS: Dict[str, Any] = {
+DEFAULTS: dict[str, Any] = {
     "fetch": {
         "user_agent": (
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
@@ -17,33 +17,35 @@ DEFAULTS: Dict[str, Any] = {
         ),
         "timeout": 25,
         "max_retries": 3,
-        "min_delay_per_domain": 3.0,   # seconds between hits on the same host
+        "min_delay_per_domain": 3.0,  # seconds between hits on the same host
         "respect_robots": True,
     },
     "llm": {
         # auto -> claude CLI (your OAuth login) if present, else the API key, else off
-        "backend": "auto",             # auto | claude_cli | api | off
-        "model": "claude-opus-5",      # CLI accepts aliases too: opus | sonnet | haiku
+        "backend": "auto",  # auto | claude_cli | api | off
+        "model": "claude-opus-5",  # CLI accepts aliases too: opus | sonnet | haiku
         "max_html_chars": 40000,
         "timeout": 180,
     },
     "alerts": {
-        "drop_pct": 5.0,               # notify when price falls this much vs last check
+        "drop_pct": 5.0,  # notify when price falls this much vs last check
         "notify_price_rise": False,
         "notify_stock_change": True,
-        "fail_streak_alert": 3,        # notify after N consecutive scrape failures
+        "fail_streak_alert": 3,  # notify after N consecutive scrape failures
     },
     "notify": {
         "console": True,
-        "desktop": True,               # macOS notification centre
-        "webhook_url": None,           # Slack / Discord / any JSON endpoint
-        "email": None,                 # {host, port, user, password, to, from}
+        "desktop": True,  # macOS notification centre
+        "webhook_url": None,  # Slack / Discord / any JSON endpoint
+        "email": None,  # {host, port, user, password, to, from}
     },
 }
 
 
 def home() -> Path:
-    return Path(os.environ.get("PRICEMON_HOME", Path.home() / ".price-monitor")).expanduser()
+    return Path(
+        os.environ.get("PRICEMON_HOME", Path.home() / ".price-monitor")
+    ).expanduser()
 
 
 def config_path() -> Path:
@@ -54,14 +56,18 @@ def db_path() -> Path:
     return home() / "prices.db"
 
 
-def _merge(base: Dict[str, Any], over: Dict[str, Any]) -> Dict[str, Any]:
+def _merge(base: dict[str, Any], over: dict[str, Any]) -> dict[str, Any]:
     out = copy.deepcopy(base)
     for k, v in (over or {}).items():
-        out[k] = _merge(out[k], v) if isinstance(v, dict) and isinstance(out.get(k), dict) else v
+        out[k] = (
+            _merge(out[k], v)
+            if isinstance(v, dict) and isinstance(out.get(k), dict)
+            else v
+        )
     return out
 
 
-def load() -> Dict[str, Any]:
+def load() -> dict[str, Any]:
     path = config_path()
     if not path.exists():
         return copy.deepcopy(DEFAULTS)

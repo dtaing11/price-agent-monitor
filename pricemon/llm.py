@@ -19,10 +19,10 @@ import os
 import re
 import shutil
 import subprocess
-from typing import List, Optional
 
 from bs4 import BeautifulSoup, Comment
 
+from .extract import attr_str
 from .models import Extraction
 
 PROMPT = """You are the extraction step of a price-monitoring agent.
@@ -55,7 +55,9 @@ Reply with ONLY a JSON object, no prose and no markdown fences:
   "title": string|null, "css_selector": string|null, "confidence": number,
   "reasoning": string}}"""
 
-CURRENCY_RE = re.compile(r"[$€£¥₹₩]|\b(?:USD|EUR|GBP|JPY|CAD|AUD|INR|SEK|PLN|CHF)\b", re.I)
+CURRENCY_RE = re.compile(
+    r"[$€£¥₹₩]|\b(?:USD|EUR|GBP|JPY|CAD|AUD|INR|SEK|PLN|CHF)\b", re.IGNORECASE
+)
 
 
 class LLMUnavailable(RuntimeError):
@@ -75,10 +77,19 @@ def condense(html: str, max_chars: int) -> str:
     if soup.title:
         head_bits.append(str(soup.title))
     for meta in soup.select("meta[property], meta[itemprop], meta[name]"):
-        prop = (meta.get("property") or meta.get("itemprop") or meta.get("name") or "").lower()
-        if any(k in prop for k in ("price", "title", "availability", "currency", "product")):
+        prop = (
+            attr_str(meta, "property")
+            or attr_str(meta, "itemprop")
+            or attr_str(meta, "name")
+            or ""
+        ).lower()
+        if any(
+            k in prop for k in ("price", "title", "availability", "currency", "product")
+        ):
             head_bits.append(str(meta))
-    for ld in soup.find_all("script", attrs={"type": re.compile("ld\\+json", re.I)}):
+    for ld in soup.find_all(
+        "script", attrs={"type": re.compile("ld\\+json", re.IGNORECASE)}
+    ):
         head_bits.append(str(ld)[:4000])
 
     body = soup.body or soup
@@ -87,13 +98,16 @@ def condense(html: str, max_chars: int) -> str:
         return "\n".join(head_bits + [whole])[:max_chars]
 
     # Too big: keep only neighbourhoods around currency-looking text.
-    snippets: List[str] = []
+    snippets: list[str] = []
     seen = set()
     for text_node in body.find_all(string=CURRENCY_RE):
         el = text_node.parent
-        for _ in range(2):                      # climb for context
-            if el.parent and el.parent.name not in ("body", "html", "[document]"):
-                el = el.parent
+        if el is None:
+            continue
+        for _ in range(2):  # climb for context
+            parent = el.parent
+            if parent is not None and parent.name not in ("body", "html", "[document]"):
+                el = parent
         chunk = re.sub(r"\s+", " ", str(el))[:800]
         key = chunk[:120]
         if key not in seen:
@@ -105,12 +119,14 @@ def condense(html: str, max_chars: int) -> str:
     h1 = body.find("h1")
     if h1:
         snippets.insert(0, str(h1)[:400])
-    return "\n".join(head_bits + ["<!-- price-bearing fragments -->"] + snippets)[:max_chars]
+    return "\n".join(head_bits + ["<!-- price-bearing fragments -->"] + snippets)[
+        :max_chars
+    ]
 
 
-def _extract_json(text: str) -> Optional[dict]:
+def _extract_json(text: str) -> dict | None:
     text = text.strip()
-    text = re.sub(r"^```(?:json)?|```$", "", text, flags=re.M).strip()
+    text = re.sub(r"^```(?:json)?|```$", "", text, flags=re.MULTILINE).strip()
     try:
         return json.loads(text)
     except json.JSONDecodeError:
@@ -125,7 +141,7 @@ def _extract_json(text: str) -> Optional[dict]:
             depth -= 1
             if depth == 0 and start is not None:
                 try:
-                    return json.loads(text[start:i + 1])
+                    return json.loads(text[start : i + 1])
                 except json.JSONDecodeError:
                     start = None
     return None
@@ -161,18 +177,36 @@ class LLM:
 
     # -- backends ---------------------------------------------------------
     def _ask_cli(self, prompt: str) -> str:
-        cmd = ["claude", "-p", prompt, "--output-format", "json",
-               "--model", self.model, "--allowed-tools", ""]
-        proc = subprocess.run(cmd, capture_output=True, text=True,
-                              timeout=self.cfg.get("timeout", 180))
+        cmd = [
+            "claude",
+            "-p",
+            prompt,
+            "--output-format",
+            "json",
+            "--model",
+            self.model,
+            "--allowed-tools",
+            "",
+        ]
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=self.cfg.get("timeout", 180),
+            check=False,
+        )
         if proc.returncode != 0:
-            raise LLMUnavailable(f"claude CLI exited {proc.returncode}: {proc.stderr.strip()[:300]}")
+            raise LLMUnavailable(
+                f"claude CLI exited {proc.returncode}: {proc.stderr.strip()[:300]}"
+            )
         try:
             payload = json.loads(proc.stdout)
         except json.JSONDecodeError:
             return proc.stdout
         if payload.get("is_error"):
-            raise LLMUnavailable(f"claude CLI error: {str(payload.get('result'))[:300]}")
+            raise LLMUnavailable(
+                f"claude CLI error: {str(payload.get('result'))[:300]}"
+            )
         return payload.get("result", "")
 
     def _ask_api(self, prompt: str) -> str:
@@ -186,24 +220,36 @@ class LLM:
             max_tokens=2000,
             messages=[{"role": "user", "content": prompt}],
         )
-        return "".join(b.text for b in resp.content if getattr(b, "type", "") == "text")
+        return "".join(
+            str(getattr(b, "text", ""))
+            for b in resp.content
+            if getattr(b, "type", "") == "text"
+        )
 
     # -- public -----------------------------------------------------------
-    def extract(self, html: str, url: str, candidates: List[Extraction]) -> Extraction:
+    def extract(self, html: str, url: str, candidates: list[Extraction]) -> Extraction:
         if not self.available:
             raise LLMUnavailable("no LLM backend available")
 
-        cand_text = "\n".join(
-            f"- {c.method}: {c.price} {c.currency or ''} (confidence {c.confidence:.2f}, "
-            f"selector {c.selector or '-'}) {c.note}" for c in candidates[:6]
-        ) or "- none"
+        cand_text = (
+            "\n".join(
+                f"- {c.method}: {c.price} {c.currency or ''} (confidence {c.confidence:.2f}, "
+                f"selector {c.selector or '-'}) {c.note}"
+                for c in candidates[:6]
+            )
+            or "- none"
+        )
 
         prompt = PROMPT.format(
             url=url,
             candidates=cand_text,
             page=condense(html, int(self.cfg.get("max_html_chars", 40000))),
         )
-        raw = self._ask_cli(prompt) if self.backend == "claude_cli" else self._ask_api(prompt)
+        raw = (
+            self._ask_cli(prompt)
+            if self.backend == "claude_cli"
+            else self._ask_api(prompt)
+        )
         data = _extract_json(raw)
         if not data:
             raise LLMUnavailable(f"could not parse model reply: {raw[:200]!r}")

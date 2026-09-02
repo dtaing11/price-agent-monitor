@@ -7,22 +7,74 @@ Real pages write the same amount a dozen ways: "$1,234.56", "1.234,56 EUR",
 from __future__ import annotations
 
 import re
-from typing import Optional, Tuple
 
 # Symbol -> ISO code.  Longest keys first when matching (see _CURRENCY_ORDER).
 SYMBOLS = {
-    "US$": "USD", "C$": "CAD", "CA$": "CAD", "A$": "AUD", "AU$": "AUD",
-    "NZ$": "NZD", "HK$": "HKD", "S$": "SGD", "R$": "BRL", "NT$": "TWD",
-    "$": "USD", "£": "GBP", "€": "EUR", "¥": "JPY", "₹": "INR", "₩": "KRW",
-    "₺": "TRY", "₽": "RUB", "₪": "ILS", "₫": "VND", "฿": "THB", "₱": "PHP",
-    "zł": "PLN", "Kč": "CZK", "kr": "SEK", "R": "ZAR",
+    "US$": "USD",
+    "C$": "CAD",
+    "CA$": "CAD",
+    "A$": "AUD",
+    "AU$": "AUD",
+    "NZ$": "NZD",
+    "HK$": "HKD",
+    "S$": "SGD",
+    "R$": "BRL",
+    "NT$": "TWD",
+    "$": "USD",
+    "£": "GBP",
+    "€": "EUR",
+    "¥": "JPY",
+    "₹": "INR",
+    "₩": "KRW",
+    "₺": "TRY",
+    "₽": "RUB",
+    "₪": "ILS",
+    "₫": "VND",
+    "฿": "THB",
+    "₱": "PHP",
+    "zł": "PLN",
+    "Kč": "CZK",
+    "kr": "SEK",
+    "R": "ZAR",
 }
 
 CODES = {
-    "USD", "EUR", "GBP", "JPY", "CAD", "AUD", "NZD", "CHF", "CNY", "HKD",
-    "SGD", "INR", "KRW", "SEK", "NOK", "DKK", "PLN", "CZK", "HUF", "RON",
-    "TRY", "RUB", "BRL", "MXN", "ARS", "ZAR", "AED", "SAR", "ILS", "THB",
-    "MYR", "IDR", "PHP", "VND", "TWD", "UAH",
+    "USD",
+    "EUR",
+    "GBP",
+    "JPY",
+    "CAD",
+    "AUD",
+    "NZD",
+    "CHF",
+    "CNY",
+    "HKD",
+    "SGD",
+    "INR",
+    "KRW",
+    "SEK",
+    "NOK",
+    "DKK",
+    "PLN",
+    "CZK",
+    "HUF",
+    "RON",
+    "TRY",
+    "RUB",
+    "BRL",
+    "MXN",
+    "ARS",
+    "ZAR",
+    "AED",
+    "SAR",
+    "ILS",
+    "THB",
+    "MYR",
+    "IDR",
+    "PHP",
+    "VND",
+    "TWD",
+    "UAH",
 }
 
 _CURRENCY_ORDER = sorted(SYMBOLS, key=len, reverse=True)
@@ -32,7 +84,7 @@ _NUMBER_RE = re.compile(r"\d[\d.,  \s]*\d|\d")
 _CODE_RE = re.compile(r"\b(" + "|".join(sorted(CODES)) + r")\b")
 
 
-def detect_currency(text: str) -> Optional[str]:
+def detect_currency(text: str) -> str | None:
     """Pull an ISO currency code out of arbitrary text, if one is stated."""
     m = _CODE_RE.search(text.upper())
     if m:
@@ -43,7 +95,7 @@ def detect_currency(text: str) -> Optional[str]:
     return None
 
 
-def _normalise_number(raw: str) -> Optional[float]:
+def _normalise_number(raw: str) -> float | None:
     """Decide what ',' and '.' mean in a number, then produce a float.
 
     Rules that cover the formats seen in the wild, including Indian lakh
@@ -82,7 +134,7 @@ def _normalise_number(raw: str) -> Optional[float]:
         return None
 
 
-def parse_price(text: str) -> Tuple[Optional[float], Optional[str]]:
+def parse_price(text: str) -> tuple[float | None, str | None]:
     """Extract (amount, currency) from a price-ish string.
 
     Returns (None, ...) when the text holds no plausible amount.
@@ -105,10 +157,12 @@ def parse_price(text: str) -> Tuple[Optional[float], Optional[str]]:
     return None, currency
 
 
-def format_price(amount: Optional[float], currency: Optional[str]) -> str:
+def format_price(amount: float | None, currency: str | None) -> str:
     if amount is None:
         return "n/a"
-    sym = {"USD": "$", "EUR": "€", "GBP": "£", "JPY": "¥", "INR": "₹"}.get(currency or "")
+    sym = {"USD": "$", "EUR": "€", "GBP": "£", "JPY": "¥", "INR": "₹"}.get(
+        currency or ""
+    )
     if sym:
         return f"{sym}{amount:,.2f}"
     return f"{amount:,.2f} {currency}" if currency else f"{amount:,.2f}"

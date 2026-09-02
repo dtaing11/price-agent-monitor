@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 import html
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import List
 
 from .money import format_price
 from .storage import Store
@@ -37,7 +36,7 @@ svg{display:block;width:100%;height:64px;margin-top:12px;overflow:visible}
 """
 
 
-def _sparkline(points: List[float], target: float | None) -> str:
+def _sparkline(points: list[float], target: float | None) -> str:
     if len(points) < 2:
         return ""
     w, h, pad = 900, 60, 4
@@ -46,21 +45,32 @@ def _sparkline(points: List[float], target: float | None) -> str:
         lo, hi = min(lo, target), max(hi, target)
     span = (hi - lo) or 1
     step = w / (len(points) - 1)
-    coords = [(i * step, h - pad - (p - lo) / span * (h - 2 * pad)) for i, p in enumerate(points)]
-    path = " ".join(f"{'M' if i == 0 else 'L'}{x:.1f},{y:.1f}" for i, (x, y) in enumerate(coords))
-    area = f"M0,{h} " + " ".join(f"L{x:.1f},{y:.1f}" for x, y in coords) + f" L{w},{h} Z"
+    coords = [
+        (i * step, h - pad - (p - lo) / span * (h - 2 * pad))
+        for i, p in enumerate(points)
+    ]
+    path = " ".join(
+        f"{'M' if i == 0 else 'L'}{x:.1f},{y:.1f}" for i, (x, y) in enumerate(coords)
+    )
+    area = (
+        f"M0,{h} " + " ".join(f"L{x:.1f},{y:.1f}" for x, y in coords) + f" L{w},{h} Z"
+    )
     trend = "down" if points[-1] < points[0] else "up"
     tline = ""
     if target is not None:
         ty = h - pad - (target - lo) / span * (h - 2 * pad)
-        tline = (f'<line x1="0" y1="{ty:.1f}" x2="{w}" y2="{ty:.1f}" stroke="var(--down)" '
-                 f'stroke-width="1" stroke-dasharray="4 4" opacity=".7"/>')
+        tline = (
+            f'<line x1="0" y1="{ty:.1f}" x2="{w}" y2="{ty:.1f}" stroke="var(--down)" '
+            f'stroke-width="1" stroke-dasharray="4 4" opacity=".7"/>'
+        )
     cx, cy = coords[-1]
-    return (f'<svg viewBox="0 0 {w} {h}" preserveAspectRatio="none">'
-            f'<path d="{area}" fill="var(--{trend})" opacity=".08"/>'
-            f'{tline}<path d="{path}" fill="none" stroke="var(--{trend})" stroke-width="2" '
-            f'stroke-linejoin="round" vector-effect="non-scaling-stroke"/>'
-            f'<circle cx="{cx:.1f}" cy="{cy:.1f}" r="3" fill="var(--{trend})"/></svg>')
+    return (
+        f'<svg viewBox="0 0 {w} {h}" preserveAspectRatio="none">'
+        f'<path d="{area}" fill="var(--{trend})" opacity=".08"/>'
+        f'{tline}<path d="{path}" fill="none" stroke="var(--{trend})" stroke-width="2" '
+        f'stroke-linejoin="round" vector-effect="non-scaling-stroke"/>'
+        f'<circle cx="{cx:.1f}" cy="{cy:.1f}" r="3" fill="var(--{trend})"/></svg>'
+    )
 
 
 def build_report(store: Store, out_path: Path) -> Path:
@@ -70,8 +80,11 @@ def build_report(store: Store, out_path: Path) -> Path:
         rows = store.history(p, limit=200)
         points = [r["price"] for r in rows if r["price"] is not None]
         stats = store.price_stats(p)
-        hit = (p.target_price is not None and p.last_price is not None
-               and p.last_price <= p.target_price)
+        hit = (
+            p.target_price is not None
+            and p.last_price is not None
+            and p.last_price <= p.target_price
+        )
 
         tags = []
         if hit:
@@ -87,21 +100,31 @@ def build_report(store: Store, out_path: Path) -> Path:
             arrow = "▼" if delta < 0 else ("▲" if delta > 0 else "→")
             change = f"{arrow} {abs(delta):.1f}% since first check"
 
-        meta = [m for m in [
-            change,
-            f"low {format_price(stats['lo'], p.currency)}" if stats and stats["n"] else "",
-            f"high {format_price(stats['hi'], p.currency)}" if stats and stats["n"] else "",
-            f"target {format_price(p.target_price, p.currency)}" if p.target_price else "",
-            f"{stats['n'] if stats else 0} checks",
-            f"last {(p.last_checked or 'never')[:16].replace('T', ' ')}",
-        ] if m]
+        meta = [
+            m
+            for m in [
+                change,
+                f"low {format_price(stats['lo'], p.currency)}"
+                if stats and stats["n"]
+                else "",
+                f"high {format_price(stats['hi'], p.currency)}"
+                if stats and stats["n"]
+                else "",
+                f"target {format_price(p.target_price, p.currency)}"
+                if p.target_price
+                else "",
+                f"{stats['n'] if stats else 0} checks",
+                f"last {(p.last_checked or 'never')[:16].replace('T', ' ')}",
+            ]
+            if m
+        ]
 
         cards.append(f"""<div class="card">
   <div class="head">
-    <div class="name"><a href="{html.escape(p.url)}">{html.escape(p.name)}</a> {' '.join(tags)}</div>
+    <div class="name"><a href="{html.escape(p.url)}">{html.escape(p.name)}</a> {" ".join(tags)}</div>
     <div class="price">{format_price(p.last_price, p.currency)}</div>
   </div>
-  <div class="meta">{' · '.join(html.escape(m) for m in meta)}</div>
+  <div class="meta">{" · ".join(html.escape(m) for m in meta)}</div>
   {_sparkline(points, p.target_price)}
 </div>""")
 
@@ -110,7 +133,7 @@ def build_report(store: Store, out_path: Path) -> Path:
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Price Monitor</title><style>{CSS}</style></head><body><div class="wrap">
 <h1>Price Monitor</h1>
-<div class="sub">{len(products)} products · generated {datetime.now():%Y-%m-%d %H:%M}</div>
+<div class="sub">{len(products)} products · generated {datetime.now(timezone.utc).astimezone():%Y-%m-%d %H:%M}</div>
 {body}</div></body></html>"""
 
     out_path.parent.mkdir(parents=True, exist_ok=True)

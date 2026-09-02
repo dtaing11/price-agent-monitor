@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Optional
 
 
 def utcnow() -> str:
@@ -18,17 +17,17 @@ class Product:
 
     name: str
     url: str
-    id: Optional[int] = None
-    selector: Optional[str] = None           # user-pinned, always tried first
-    learned_selector: Optional[str] = None   # discovered by the LLM, self-healing
-    target_price: Optional[float] = None
-    currency: Optional[str] = None
+    id: int | None = None
+    selector: str | None = None  # user-pinned, always tried first
+    learned_selector: str | None = None  # discovered by the LLM, self-healing
+    target_price: float | None = None
+    currency: str | None = None
     active: bool = True
     notes: str = ""
     created_at: str = field(default_factory=utcnow)
-    last_checked: Optional[str] = None
-    last_price: Optional[float] = None
-    last_in_stock: Optional[bool] = None
+    last_checked: str | None = None
+    last_price: float | None = None
+    last_in_stock: bool | None = None
     fail_count: int = 0
 
 
@@ -36,13 +35,13 @@ class Product:
 class Extraction:
     """One attempt at reading a price off a page."""
 
-    price: Optional[float] = None
-    currency: Optional[str] = None
-    in_stock: Optional[bool] = None
-    title: Optional[str] = None
-    method: str = "none"        # jsonld | microdata | meta | selector | heuristic | llm
-    confidence: float = 0.0     # 0..1
-    selector: Optional[str] = None
+    price: float | None = None
+    currency: str | None = None
+    in_stock: bool | None = None
+    title: str | None = None
+    method: str = "none"  # jsonld | microdata | meta | selector | heuristic | llm
+    confidence: float = 0.0  # 0..1
+    selector: str | None = None
     note: str = ""
 
     @property
@@ -52,10 +51,10 @@ class Extraction:
 
 @dataclass
 class Alert:
-    kind: str                   # target_hit | price_drop | price_rise | back_in_stock | out_of_stock | error
+    kind: str  # target_hit | price_drop | price_rise | back_in_stock | out_of_stock | error
     product: str
     message: str
-    price: Optional[float] = None
+    price: float | None = None
 
 
 @dataclass
@@ -63,7 +62,7 @@ class CheckResult:
     product: Product
     extraction: Extraction
     alerts: list = field(default_factory=list)
-    error: Optional[str] = None
+    error: str | None = None
 
     @property
     def ok(self) -> bool:

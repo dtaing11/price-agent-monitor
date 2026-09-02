@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable, List, Optional
 
 from .models import Alert, Extraction, Product, utcnow
 
@@ -64,10 +64,20 @@ class Store:
                (name, url, selector, learned_selector, target_price, currency,
                 active, notes, created_at, last_checked, last_price, last_in_stock)
                VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (p.name, p.url, p.selector, p.learned_selector, p.target_price,
-             p.currency, int(p.active), p.notes, p.created_at, p.last_checked,
-             p.last_price,
-             None if p.last_in_stock is None else int(p.last_in_stock)),
+            (
+                p.name,
+                p.url,
+                p.selector,
+                p.learned_selector,
+                p.target_price,
+                p.currency,
+                int(p.active),
+                p.notes,
+                p.created_at,
+                p.last_checked,
+                p.last_price,
+                None if p.last_in_stock is None else int(p.last_in_stock),
+            ),
         )
         self.conn.commit()
         p.id = cur.lastrowid
@@ -75,21 +85,36 @@ class Store:
 
     def _row_to_product(self, r: sqlite3.Row) -> Product:
         return Product(
-            id=r["id"], name=r["name"], url=r["url"], selector=r["selector"],
-            learned_selector=r["learned_selector"], target_price=r["target_price"],
-            currency=r["currency"], active=bool(r["active"]), notes=r["notes"] or "",
-            created_at=r["created_at"], last_checked=r["last_checked"],
+            id=r["id"],
+            name=r["name"],
+            url=r["url"],
+            selector=r["selector"],
+            learned_selector=r["learned_selector"],
+            target_price=r["target_price"],
+            currency=r["currency"],
+            active=bool(r["active"]),
+            notes=r["notes"] or "",
+            created_at=r["created_at"],
+            last_checked=r["last_checked"],
             last_price=r["last_price"],
-            last_in_stock=None if r["last_in_stock"] is None else bool(r["last_in_stock"]),
+            last_in_stock=None
+            if r["last_in_stock"] is None
+            else bool(r["last_in_stock"]),
             fail_count=r["fail_count"],
         )
 
-    def get_product(self, name: str) -> Optional[Product]:
-        r = self.conn.execute("SELECT * FROM products WHERE name = ?", (name,)).fetchone()
+    def get_product(self, name: str) -> Product | None:
+        r = self.conn.execute(
+            "SELECT * FROM products WHERE name = ?", (name,)
+        ).fetchone()
         return self._row_to_product(r) if r else None
 
-    def list_products(self, active_only: bool = False) -> List[Product]:
-        sql = "SELECT * FROM products" + (" WHERE active = 1" if active_only else "") + " ORDER BY name"
+    def list_products(self, active_only: bool = False) -> list[Product]:
+        sql = (
+            "SELECT * FROM products"
+            + (" WHERE active = 1" if active_only else "")
+            + " ORDER BY name"
+        )
         return [self._row_to_product(r) for r in self.conn.execute(sql)]
 
     def update_product(self, p: Product) -> None:
@@ -97,10 +122,20 @@ class Store:
             """UPDATE products SET url=?, selector=?, learned_selector=?, target_price=?,
                currency=?, active=?, notes=?, last_checked=?, last_price=?,
                last_in_stock=?, fail_count=? WHERE id=?""",
-            (p.url, p.selector, p.learned_selector, p.target_price, p.currency,
-             int(p.active), p.notes, p.last_checked, p.last_price,
-             None if p.last_in_stock is None else int(p.last_in_stock),
-             p.fail_count, p.id),
+            (
+                p.url,
+                p.selector,
+                p.learned_selector,
+                p.target_price,
+                p.currency,
+                int(p.active),
+                p.notes,
+                p.last_checked,
+                p.last_price,
+                None if p.last_in_stock is None else int(p.last_in_stock),
+                p.fail_count,
+                p.id,
+            ),
         )
         self.conn.commit()
 
@@ -110,27 +145,39 @@ class Store:
         return cur.rowcount > 0
 
     # -- observations -----------------------------------------------------
-    def record(self, product: Product, ex: Extraction, error: Optional[str] = None) -> None:
+    def record(
+        self, product: Product, ex: Extraction, error: str | None = None
+    ) -> None:
         self.conn.execute(
             """INSERT INTO observations (product_id, ts, price, currency, in_stock, method, title, error)
                VALUES (?,?,?,?,?,?,?,?)""",
-            (product.id, utcnow(), ex.price, ex.currency,
-             None if ex.in_stock is None else int(ex.in_stock),
-             ex.method, ex.title, error),
+            (
+                product.id,
+                utcnow(),
+                ex.price,
+                ex.currency,
+                None if ex.in_stock is None else int(ex.in_stock),
+                ex.method,
+                ex.title,
+                error,
+            ),
         )
         self.conn.commit()
 
-    def history(self, product: Product, limit: int = 100) -> List[sqlite3.Row]:
+    def history(self, product: Product, limit: int = 100) -> list[sqlite3.Row]:
         rows = self.conn.execute(
             """SELECT * FROM observations WHERE product_id = ?
-               ORDER BY ts DESC LIMIT ?""", (product.id, limit)).fetchall()
+               ORDER BY ts DESC LIMIT ?""",
+            (product.id, limit),
+        ).fetchall()
         return list(reversed(rows))
 
     def price_stats(self, product: Product):
         return self.conn.execute(
             """SELECT MIN(price) lo, MAX(price) hi, AVG(price) avg, COUNT(price) n
                FROM observations WHERE product_id = ? AND price IS NOT NULL""",
-            (product.id,)).fetchone()
+            (product.id,),
+        ).fetchone()
 
     # -- alerts -----------------------------------------------------------
     def record_alerts(self, product: Product, alerts: Iterable[Alert]) -> None:
@@ -141,10 +188,14 @@ class Store:
             )
         self.conn.commit()
 
-    def recent_alerts(self, limit: int = 20) -> List[sqlite3.Row]:
-        return list(self.conn.execute(
-            """SELECT a.*, p.name FROM alerts a JOIN products p ON p.id = a.product_id
-               ORDER BY a.ts DESC LIMIT ?""", (limit,)))
+    def recent_alerts(self, limit: int = 20) -> list[sqlite3.Row]:
+        return list(
+            self.conn.execute(
+                """SELECT a.*, p.name FROM alerts a JOIN products p ON p.id = a.product_id
+               ORDER BY a.ts DESC LIMIT ?""",
+                (limit,),
+            )
+        )
 
     def close(self) -> None:
         self.conn.close()

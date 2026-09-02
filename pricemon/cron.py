@@ -13,13 +13,14 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import List, Tuple
 
-BEGIN = "# >>> pricemon >>>  (managed by `pricemon install-cron` - edit with that command)"
+BEGIN = (
+    "# >>> pricemon >>>  (managed by `pricemon install-cron` - edit with that command)"
+)
 END = "# <<< pricemon <<<"
 
 
-def parse_times(spec: str) -> List[Tuple[int, int]]:
+def parse_times(spec: str) -> list[tuple[int, int]]:
     """'08:00,20:00' -> [(8, 0), (20, 0)]"""
     out = []
     for part in spec.split(","):
@@ -54,15 +55,19 @@ def _runner_env() -> str:
     # Needed for notify-send under cron on Linux desktops.
     uid = os.getuid()
     if sys.platform.startswith("linux"):
-        parts += ['DISPLAY="${DISPLAY:-:0}"',
-                  f'DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/{uid}/bus"']
+        parts += [
+            'DISPLAY="${DISPLAY:-:0}"',
+            f'DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/{uid}/bus"',
+        ]
     pricemon_home = os.environ.get("PRICEMON_HOME")
     if pricemon_home:
         parts.append(f'PRICEMON_HOME="{pricemon_home}"')
     return " ".join(parts)
 
 
-def build_lines(times: List[Tuple[int, int]], project_dir: Path, log_file: Path) -> List[str]:
+def build_lines(
+    times: list[tuple[int, int]], project_dir: Path, log_file: Path
+) -> list[str]:
     env = _runner_env()
     py = sys.executable or "python3"
     lines = []
@@ -75,9 +80,11 @@ def build_lines(times: List[Tuple[int, int]], project_dir: Path, log_file: Path)
 
 
 def current_crontab() -> str:
-    proc = subprocess.run(["crontab", "-l"], capture_output=True, text=True)
+    proc = subprocess.run(
+        ["crontab", "-l"], capture_output=True, text=True, check=False
+    )
     if proc.returncode != 0:
-        return ""            # "no crontab for user" is not an error for us
+        return ""  # "no crontab for user" is not an error for us
     return proc.stdout
 
 
@@ -95,20 +102,25 @@ def strip_block(crontab: str) -> str:
     return "\n".join(out).rstrip("\n")
 
 
-def render_block(lines: List[str]) -> str:
+def render_block(lines: list[str]) -> str:
     return "\n".join([BEGIN, *lines, END])
 
 
 def write_crontab(text: str) -> None:
     if not shutil.which("crontab"):
         raise RuntimeError("`crontab` not found on this system")
-    proc = subprocess.run(["crontab", "-"], input=text.rstrip("\n") + "\n",
-                          text=True, capture_output=True)
+    proc = subprocess.run(
+        ["crontab", "-"],
+        input=text.rstrip("\n") + "\n",
+        text=True,
+        capture_output=True,
+        check=False,
+    )
     if proc.returncode != 0:
         raise RuntimeError(f"crontab install failed: {proc.stderr.strip()}")
 
 
-def install(times: List[Tuple[int, int]], project_dir: Path, log_file: Path) -> str:
+def install(times: list[tuple[int, int]], project_dir: Path, log_file: Path) -> str:
     block = render_block(build_lines(times, project_dir, log_file))
     existing = strip_block(current_crontab())
     combined = (existing + "\n\n" if existing else "") + block
