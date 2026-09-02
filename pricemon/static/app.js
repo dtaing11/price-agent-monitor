@@ -170,7 +170,13 @@ function bigChart(p) {
 /* One line per shop, so you can see who is actually cheapest over time.
    Hue stays reserved for meaning: the cheapest shop is green, the rest are
    ink, told apart by dash pattern rather than by a palette of colours. */
-const DASHES = ["", "4 3", "1 3", "6 3 1 3", "2 2", "8 4"];
+const SERIES = ["var(--series-1)", "var(--series-2)", "var(--series-3)",
+                "var(--series-4)", "var(--series-5)"];
+// Past the fifth slot a colour would have to be reused, which would say two
+// lines are the same thing. Extra members keep a neutral ink line and are
+// named in the legend instead.
+const seriesColour = (i) => (i < SERIES.length ? SERIES[i] : "var(--ink-3)");
+const DASHES = ["", "", "", "", "", "5 3", "2 3", "8 4"];
 
 function groupChart(members) {
   const wrap = el("div", { className: "chart-wrap" });
@@ -211,19 +217,21 @@ function groupChart(members) {
        <text x="${W - padR}" y="${(Y(Math.min(...targets)) - 4).toFixed(1)}" text-anchor="end"
          font-size="8.5" font-family="var(--mono)" fill="var(--drop)">TARGET</text>` : "";
 
-  const lines = withHistory.map((m, i) => {
+  const order = new Map(members.map((m, i) => [m.name, i]));
+  const lines = withHistory.map((m) => {
     const pts = series(m);
+    const i = order.get(m.name) ?? 0;
     const isBest = best && m.name === best.name;
-    const stroke = isBest ? "var(--drop)" : "var(--ink-3)";
+    const stroke = seriesColour(i);
     const d = pts.length === 1
       ? `M${X(new Date(pts[0].ts).getTime()).toFixed(1)},${Y(pts[0].price).toFixed(1)} h6`
       : pts.map((p, k) => `${k ? "L" : "M"}${X(new Date(p.ts).getTime()).toFixed(1)},${Y(p.price).toFixed(1)}`).join(" ");
     const last = pts.at(-1);
-    return `<path d="${d}" fill="none" stroke="${stroke}" stroke-width="${isBest ? 1.9 : 1.3}"
-        stroke-dasharray="${isBest ? "" : DASHES[i % DASHES.length]}" stroke-linejoin="round"
-        opacity="${isBest ? 1 : 0.75}" vector-effect="non-scaling-stroke"/>
+    return `<path d="${d}" fill="none" stroke="${stroke}" stroke-width="${isBest ? 2.4 : 1.8}"
+        stroke-dasharray="${DASHES[i] || ""}" stroke-linejoin="round"
+        opacity="1" vector-effect="non-scaling-stroke"/>
       <circle cx="${X(new Date(last.ts).getTime()).toFixed(1)}" cy="${Y(last.price).toFixed(1)}"
-        r="${isBest ? 2.8 : 2}" fill="${stroke}"/>`;
+        r="${isBest ? 3.2 : 2.4}" fill="${stroke}" stroke="var(--surface)" stroke-width="1.5"/>`;
   }).join("");
 
   const day = (t) => new Date(t).toLocaleDateString(undefined, { month: "short", day: "numeric" });
@@ -259,7 +267,8 @@ function groupsOf(products) {
       group,
       members,
       shops: members.length,
-      title: members.find((m) => m.title)?.title || group,
+      title: best.title || group,
+      groupTitle: group.replace(/[-_]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()),
       target_hit: members.some((m) => m.target_hit),
     });
   }
@@ -312,12 +321,21 @@ function row(p) {
   node.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); } };
 
   const who = el("div", { className: "who" });
-  const name = el("div", { className: "name", textContent: p.title || p.name, title: p.title || p.name });
-  if (p.isGroup) name.dataset.shops = `${p.shops} shops`;
+  const shown = p.isGroup && new Set((p.members || []).map((m) => m.title)).size > 1
+    ? p.groupTitle : (p.title || p.name);
+  const name = el("div", { className: "name", textContent: shown, title: shown });
+  if (p.isGroup) {
+    const distinct = new Set(p.members.map((m) => m.title)).size > 1;
+    name.dataset.shops = distinct ? `${p.shops} products` : `${p.shops} shops`;
+  }
   who.append(name);
   const sub = el("div", { className: "sub" });
   sub.append(
-    el("span", { textContent: p.isGroup ? `cheapest at ${p.retailer}` : p.retailer }),
+    el("span", { textContent: p.isGroup
+      ? (new Set(p.members.map((m) => m.title)).size > 1
+          ? `cheapest: ${(p.title || "").slice(0, 28)}`
+          : `cheapest at ${p.retailer}`)
+      : p.retailer }),
     el("span", { textContent: when(p.last_checked) }),
   );
   if (p.last_in_stock === false) sub.append(el("span", { className: "tag oos", textContent: "out of stock" }));
@@ -478,24 +496,42 @@ function renderGroup(side, group, members) {
   const dearest = priced.length
     ? priced.reduce((a, b) => (a.last_price >= b.last_price ? a : b))
     : null;
-  const title = members.find((m) => m.title)?.title || group;
+  // A group is either one product at several shops, or several products being
+  // compared. They read completely differently, so say which this is.
+  const manyProducts = new Set(members.map((m) => m.title)).size > 1;
+  const pretty = group.replace(/[-_]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+  const title = manyProducts ? pretty : (members.find((m) => m.title)?.title || group);
+  const kind = manyProducts
+    ? `${members.length} products compared`
+    : `${members.length} shops · group ${group}`;
 
   side.append(el("h2", { textContent: title }));
-  side.append(el("div", { className: "url", textContent: `${members.length} shops · group ${group}` }));
+  side.append(el("div", { className: "url", textContent: kind }));
   side.append(groupChart(members));
 
   const legend = el("div", { className: "legend" });
+  const slot = new Map(members.map((m, i) => [m.name, i]));
   const ordered = [...members].sort((a, b) => (a.last_price ?? 1e15) - (b.last_price ?? 1e15));
-  ordered.forEach((m, i) => {
+  ordered.forEach((m) => {
+    const i = slot.get(m.name) ?? 0;
     const isBest = best && m.name === best.name;
     const rowEl = el("div", { className: "legend-row" + (isBest ? " best" : "") });
     rowEl.onclick = () => { state.selectedGroup = null; state.selected = m.name; render(); };
     const swatch = el("div", { className: "swatch" });
-    if (!isBest) swatch.style.background =
-      `repeating-linear-gradient(90deg, var(--ink-3) 0 3px, transparent 3px ${5 + (i % 3)}px)`;
+    swatch.style.background = seriesColour(i);
+    if (DASHES[i]) {
+      swatch.style.background =
+        `repeating-linear-gradient(90deg, ${seriesColour(i)} 0 4px, transparent 4px 7px)`;
+    }
     rowEl.append(swatch);
-    rowEl.append(el("div", { className: "shop", textContent: m.retailer,
-                             title: `${m.retailer} — click for its own history` }));
+    // Different products in one group; different shops for one product. Name
+    // whichever distinguishes them, so identity never rests on colour alone.
+    const distinctProducts = new Set(members.map((x) => x.title)).size > 1;
+    const label = distinctProducts ? (m.title || m.retailer) : m.retailer;
+    const name = el("div", { className: "shop", textContent: label,
+                             title: `${label} — click for its own history` });
+    if (isBest) name.append(el("span", { className: "tag-best", textContent: "cheapest" }));
+    rowEl.append(name);
     const amount = el("div", { className: "amount" + (m.last_in_stock === false ? " oos" : ""),
                                textContent: money(m.last_price, m.currency) });
     rowEl.append(amount);
@@ -505,8 +541,11 @@ function renderGroup(side, group, members) {
 
   // Shops list variants under one name. When one member is a fraction of the
   // rest it is usually a different size or condition, not a deal.
+  // Only meaningful when every member should be the same item - different
+  // products are *expected* to sit at different prices.
   const sorted = priced.map((m) => m.last_price).sort((a, b) => a - b);
-  if (sorted.length >= 2 && sorted[0] < sorted[Math.floor((sorted.length - 1) / 2) + 1] * 0.5) {
+  if (!manyProducts && sorted.length >= 2
+      && sorted[0] < sorted[Math.floor((sorted.length - 1) / 2) + 1] * 0.5) {
     const warn = el("div", { className: "saving", style: "color:var(--rise)" });
     warn.textContent = "These prices are too far apart to be the same item — the cheapest is probably a different size, pack or condition.";
     side.append(warn);
@@ -515,9 +554,17 @@ function renderGroup(side, group, members) {
   if (best && dearest && dearest.last_price > best.last_price) {
     const saving = dearest.last_price - best.last_price;
     const note = el("div", { className: "saving" });
-    note.append(document.createTextNode("Cheapest at "));
-    note.append(el("b", { textContent: best.retailer }));
-    note.append(document.createTextNode(` — ${money(saving, best.currency)} less than ${dearest.retailer}`));
+    if (manyProducts) {
+      note.append(el("b", { textContent: best.title || best.retailer }));
+      note.append(document.createTextNode(
+        ` is the cheapest of the ${members.length} — ${money(saving, best.currency)}` +
+        ` less than ${dearest.title || dearest.retailer}`));
+    } else {
+      note.append(document.createTextNode("Cheapest at "));
+      note.append(el("b", { textContent: best.retailer }));
+      note.append(document.createTextNode(
+        ` — ${money(saving, best.currency)} less than ${dearest.retailer}`));
+    }
     side.append(note);
   }
 
@@ -604,7 +651,7 @@ function poll() {
 }
 
 /* ---------------- add dialog ---------------- */
-let addMode = "name", picked = null, results = [];
+let addMode = "name", picked = new Set(), results = [];
 
 function setMode(mode) {
   addMode = mode;
@@ -614,25 +661,51 @@ function setMode(mode) {
 }
 
 let lastQueryUsed = null;
+let lastPlan = null;
 
 function renderResults() {
   const box = $("#results");
   box.hidden = !results.length;
   box.innerHTML = "";
-  if (results.length && lastQueryUsed) {
+  if (results.length && lastPlan) {
+    // A category was asked for, so say which products it went looking for.
+    box.append(el("div", { className: "hint", style: "padding:8px 11px 2px" }, [
+      el("div", { textContent: lastPlan.reading || "Looked for specific models:" }),
+      el("div", { style: "color:var(--ink-2);margin-top:2px",
+                  textContent: lastPlan.products.join(" · ") }),
+    ]));
+  } else if (results.length && lastQueryUsed) {
     box.append(el("div", { className: "hint", style: "padding:8px 11px 2px",
-      textContent: `Searched for "${lastQueryUsed}" — brand and model is what finds a product.` }));
+      textContent: `Searched for "${lastQueryUsed}".` }));
+  }
+  if (results.length) {
+    box.append(el("div", { className: "hint", style: "padding:2px 11px 6px",
+      textContent: "Pick one, or several to track together and compare." }));
   }
   results.forEach((r) => {
-    const node = el("div", { className: "result" + (picked && picked.url === r.url ? " on" : "") });
-    node.onclick = () => { picked = r; renderResults(); };
+    const chosen = picked.has(r.url);
+    const node = el("div", { className: "result" + (chosen ? " on" : "") });
+    node.onclick = () => {
+      if (chosen) picked.delete(r.url); else picked.add(r.url);
+      renderResults();
+      updateAddButton();
+    };
+    node.append(el("div", { className: "pick", textContent: chosen ? "◉" : "○" }));
     node.append(el("div", { className: "p", textContent: r.price == null ? "—" : money(r.price, r.currency) }));
     node.append(el("div", { className: "t", style: "flex:1" }, [
-      el("div", { className: "t", textContent: r.title.slice(0, 76) }),
-      el("div", { className: "r", textContent: r.retailer + (r.note ? ` · ${r.note.slice(0, 40)}` : r.in_stock === false ? " · out of stock" : "") }),
+      el("div", { className: "t", textContent: r.title.slice(0, 72) }),
+      el("div", { className: "r", textContent:
+        (r.matched ? `${r.matched} · ` : "") + r.retailer +
+        (r.note ? ` · ${r.note.slice(0, 34)}` : r.in_stock === false ? " · out of stock" : "") }),
     ]));
     box.append(node);
   });
+}
+
+function updateAddButton() {
+  const n = picked.size;
+  $("#btn-add-go").textContent =
+    n > 1 ? `Track ${n} together` : "Start tracking";
 }
 
 $("#add-mode").onclick = (e) => { const b = e.target.closest("button"); if (b) setMode(b.dataset.mode); };
@@ -650,8 +723,12 @@ $("#btn-search").onclick = async () => {
     // otherwise the results look like they ignored what was typed.
     lastQueryUsed = data.query_used && data.query_used.toLowerCase() !== q.toLowerCase()
       ? data.query_used : null;
-    picked = results.find((r) => r.price != null) || results[0] || null;
+    lastPlan = data.plan && data.plan.products && data.plan.products.length ? data.plan : null;
+    picked = new Set();
+    const first = results.find((r) => r.price != null) || results[0];
+    if (first) picked.add(first.url);
     renderResults();
+    updateAddButton();
     if (!results.length) $("#results").innerHTML = '<div style="padding:14px;color:var(--ink-3);font-size:12.5px">Nothing found. Try the brand and model.</div>';
   } catch (e) {
     $("#results").hidden = true;
@@ -662,7 +739,7 @@ $("#btn-search").onclick = async () => {
 const dlg = $("#dlg-add");
 const openAdd = () => {
   $("#form-add").reset(); $("#add-err").hidden = true;
-  picked = null; results = []; renderResults();
+  picked = new Set(); results = []; lastPlan = null; renderResults(); updateAddButton();
   setMode("name"); dlg.showModal(); $("#f-query").focus();
 };
 $("#btn-add").onclick = openAdd;
@@ -672,25 +749,37 @@ $("#form-add").addEventListener("submit", async (ev) => {
   if (ev.submitter && ev.submitter.value === "cancel") return;
   ev.preventDefault();
   const btn = $("#btn-add-go"), err = $("#add-err");
-  const url = addMode === "name" ? picked && picked.url : $("#f-url").value.trim();
-  if (!url) {
-    err.textContent = addMode === "name" ? "Search first, then choose one of the results." : "Paste a product link.";
+  const chosen = addMode === "name" ? [...picked] : [$("#f-url").value.trim()].filter(Boolean);
+  if (!chosen.length) {
+    err.textContent = addMode === "name" ? "Search first, then choose a result." : "Paste a product link.";
     err.hidden = false; return;
   }
-  err.hidden = true; btn.disabled = true; btn.textContent = "Reading the page";
+  err.hidden = true; btn.disabled = true;
+  btn.textContent = chosen.length > 1 ? `Reading ${chosen.length} pages` : "Reading the page";
   try {
-    await api("/api/products", "POST", {
-      url,
-      name: $("#f-name").value.trim(),
-      target_price: $("#f-target").value === "" ? null : $("#f-target").value,
-      selector: addMode === "url" ? $("#f-selector").value.trim() : "",
-    });
+    if (chosen.length > 1) {
+      const out = await api("/api/products/group", "POST", {
+        urls: chosen,
+        name: $("#f-name").value.trim(),
+        target_price: $("#f-target").value === "" ? null : $("#f-target").value,
+      });
+      if (out.failed && out.failed.length) {
+        console.warn("some shops could not be read", out.failed);
+      }
+    } else {
+      await api("/api/products", "POST", {
+        url: chosen[0],
+        name: $("#f-name").value.trim(),
+        target_price: $("#f-target").value === "" ? null : $("#f-target").value,
+        selector: addMode === "url" ? $("#f-selector").value.trim() : "",
+      });
+    }
     dlg.close();
     await refresh();
   } catch (e) {
     err.textContent = e.message + (e.data?.hint ? ` — ${e.data.hint}` : "");
     err.hidden = false;
-  } finally { btn.disabled = false; btn.textContent = "Start tracking"; }
+  } finally { btn.disabled = false; updateAddButton(); }
 });
 
 /* ---------------- settings ---------------- */

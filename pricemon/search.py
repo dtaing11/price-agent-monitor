@@ -12,6 +12,7 @@ returns real retailer links rather than a JS shell.
 from __future__ import annotations
 
 import base64
+import logging
 import re
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -88,6 +89,7 @@ class SearchResult:
     in_stock: bool | None = None
     method: str = ""
     note: str = ""
+    matched: str | None = None  # the specific product this result was found for
 
     def describe(self) -> str:
         stock = (
@@ -178,6 +180,136 @@ def normalize_query(text: str, max_words: int = 8) -> str:
     return out.strip(" -–—|,;:\"'") or text
 
 
+# Generic nouns that describe a *kind* of thing rather than a product. A query
+# made only of these has no page to find - it needs turning into real models
+# first.
+CATEGORY_WORDS = {
+    "dock",
+    "docking",
+    "station",
+    "hub",
+    "adapter",
+    "cable",
+    "charger",
+    "monitor",
+    "display",
+    "keyboard",
+    "mouse",
+    "chair",
+    "desk",
+    "laptop",
+    "headphones",
+    "earbuds",
+    "speaker",
+    "webcam",
+    "microphone",
+    "ssd",
+    "drive",
+    "router",
+    "printer",
+    "vacuum",
+    "blender",
+    "kettle",
+    "fryer",
+    "camera",
+    "phone",
+    "tablet",
+    "watch",
+    "mattress",
+    "backpack",
+    "shoes",
+    "jacket",
+    "best",
+    "good",
+    "cheap",
+    "top",
+    "budget",
+    "quiet",
+    "wireless",
+    "portable",
+    "gaming",
+    "office",
+    "ergonomic",
+    "thunderbolt",
+    "usb",
+    "bluetooth",
+    "4k",
+}
+
+PLANNER_PROMPT = """A shopper wants to track the price of something and typed:
+
+  {query}
+
+Decide what they are actually shopping for.
+
+If that names one specific product (a brand and model), just return it.
+
+If it names a *category* - "thunderbolt dock", "good office chair" - name the
+specific products a knowledgeable person would actually shop for. Rules:
+- real models currently sold, with brand and model number, e.g.
+  "CalDigit TS4 Thunderbolt 4 Dock", not "a Thunderbolt dock"
+- the ones most people would genuinely consider, best-regarded first
+- spread across price points where that makes sense
+- no accessories, no discontinued models, no made-up names
+
+Reply with ONLY JSON:
+{{"specific": true|false,
+  "reading": "one short line on what you think they want",
+  "products": ["Brand Model", ...]}}"""
+
+
+def looks_vague(query: str) -> bool:
+    """Is this a category rather than a product?
+
+    A model number - a token mixing letters and digits - is the giveaway that
+    someone already knows what they want.
+    """
+    words = [w for w in re.split(r"[^A-Za-z0-9-]+", query.lower()) if w]
+    if not words:
+        return True
+    if any(MODEL_TOKEN.match(w) and any(c.isdigit() for c in w) for w in words):
+        return False
+    if len(words) > 6:
+        return False
+    generic = sum(1 for w in words if w in CATEGORY_WORDS)
+    return generic >= max(1, len(words) // 2)
+
+
+def plan_products(query: str, llm, limit: int = 4) -> tuple[list[str], str]:
+    """Turn a vague ask into specific products worth pricing.
+
+    This is the step that makes a category searchable at all: "thunderbolt
+    dock" has no product page, but "CalDigit TS4" does. Suggestions are only a
+    plan - each one is then searched and priced for real, so anything invented
+    or discontinued simply finds nothing and drops out.
+    """
+    if not getattr(llm, "available", False):
+        return [], ""
+    try:
+        raw = (
+            llm._ask_cli(PLANNER_PROMPT.format(query=query))
+            if llm.backend == "claude_cli"
+            else llm._ask_api(PLANNER_PROMPT.format(query=query))
+        )
+        from .llm import _extract_json
+
+        data = _extract_json(raw) or {}
+    except Exception as exc:  # noqa: BLE001 - never block a search on planning
+        # Swallowing this silently made a working planner look broken, so the
+        # reason travels back with the empty plan.
+        logger.info("could not plan %r: %s", query, exc)
+        return [], f"(could not work out what to look for: {type(exc).__name__})"
+
+    if data.get("specific"):
+        return [], str(data.get("reading") or "")
+    products = [
+        str(p).strip()
+        for p in (data.get("products") or [])
+        if isinstance(p, str) and 2 < len(str(p).strip()) < 90
+    ]
+    return products[:limit], str(data.get("reading") or "")
+
+
 def _decode(href: str) -> str:
     """Unwrap the redirect URLs search engines wrap their results in."""
     if "uddg=" in href:  # DuckDuckGo
@@ -204,6 +336,8 @@ def _looks_like_product(url: str) -> bool:
         return False
     return bool(_PRODUCT_RE.search(parsed.path))
 
+
+logger = logging.getLogger(__name__)
 
 # Three engines, tried in order. One of them rate-limiting should not take the
 # whole feature down with it, and none of them is hit hard: results are found
@@ -353,6 +487,53 @@ def _keep_products(raw: list[tuple[str, str]], limit: int) -> list[tuple[str, st
     return found
 
 
+def _search_each(
+    products: list[str],
+    cfg: dict,
+    retailers: list[str] | None,
+    limit: int,
+    price_them: bool,
+) -> list[SearchResult]:
+    """Search several specific products and pool what comes back."""
+    found: list[SearchResult] = []
+    per_product = max(1, limit // max(len(products), 1)) + 1
+
+    for product in products:
+        urls = find_urls(product, cfg["fetch"], retailers=retailers, limit=per_product)
+        if not urls:
+            continue  # suggested model does not exist, or nobody sells it
+        if not price_them:
+            found.extend(
+                SearchResult(title=t, url=u, retailer=_retailer_of(u), matched=product)
+                for u, t in urls[:per_product]
+            )
+            continue
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            for result in pool.map(
+                lambda c: _price_one(c[0], c[1], cfg["fetch"]), urls[:per_product]
+            ):
+                result.matched = product
+                found.append(result)
+
+    # One shop per product is enough to compare on; keep the cheapest of each.
+    best_per_product: dict[str, SearchResult] = {}
+    extras: list[SearchResult] = []
+    for result in found:
+        key = result.matched or result.url
+        current = best_per_product.get(key)
+        if result.price is None:
+            extras.append(result)
+        elif current is None or (current.price or 1e15) > result.price:
+            if current is not None:
+                extras.append(current)
+            best_per_product[key] = result
+
+    ordered = sorted(best_per_product.values(), key=lambda r: r.price or 1e15)
+    ordered += [r for r in extras if r.price is not None]
+    ordered += [r for r in extras if r.price is None]
+    return ordered[:limit]
+
+
 def _retailer_of(url: str) -> str:
     rule = sites.match(url)
     return rule.name if rule else urlparse(url).netloc.replace("www.", "")
@@ -387,8 +568,23 @@ def search(
     retailers: list[str] | None = None,
     limit: int = 6,
     price_them: bool = True,
+    llm=None,
+    on_plan=None,
 ) -> list[SearchResult]:
-    """Name in, priced product pages out - best match first."""
+    """Name in, priced product pages out - best match first.
+
+    A vague ask ("thunderbolt dock") names no page anywhere, so before
+    searching, Claude turns it into the specific models a knowledgeable person
+    would consider. Each of those is then searched and priced for real, so a
+    suggestion that is wrong or discontinued simply finds nothing.
+    """
+    if llm is not None and looks_vague(query):
+        products, reading = plan_products(query, llm)
+        if products:
+            if on_plan:
+                on_plan(products, reading)
+            return _search_each(products, cfg, retailers, limit, price_them)
+
     candidates = find_urls(query, cfg["fetch"], retailers=retailers, limit=limit * 2)
     if not candidates:
         return []

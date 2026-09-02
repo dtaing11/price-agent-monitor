@@ -198,6 +198,29 @@ the normal extraction cascade, and asks Claude which results are actually that
 product rather than a case, cable, older model or multi-pack. Results show the
 retailer, live price and stock, so you pick with the numbers in front of you.
 
+**Vague is fine too.** "thunderbolt dock" names a category, not a product, and
+searching it verbatim returns listicles and category pages. So the agent works
+out what you actually mean before searching:
+
+```
+$ pricemon search "thunderbolt dock"
+working out what 'thunderbolt dock' means ...
+  reading that as: Thunderbolt docking stations to expand ports and connect peripherals
+    → CalDigit TS4 Thunderbolt 4 Dock
+    → Belkin Thunderbolt 4 Dock Pro
+    → OWC Thunderbolt Dock
+    → Kensington Thunderbolt 4 Dock
+
+  #  PRICE        RETAILER         PRODUCT
+  1      $269.99  kensington.com   SD5700T Thunderbolt 4 Dual 4K Docking Station · in stock
+  2      $299.99  belkin.com       Pro Thunderbolt 4 Dock · OUT OF STOCK
+  3      $379.99  us.caldigit.com  TS4 - Thunderbolt Station 4 · in stock
+```
+
+Those model names are only a plan: each is then searched and priced for real, so
+a suggestion that is discontinued or invented simply finds nothing and drops
+out. The reading is printed so you can see what it went looking for.
+
 **How exact does the name have to be?** Not very — brand and model is plenty.
 You can paste a whole product title straight off a shop page and it will be
 trimmed for you:
@@ -240,6 +263,16 @@ cheapest is Walmart — $29.00 less than the dearest
 
 If several shops cross your target at once you get **one** notification, naming
 the cheapest and how many it beat — not one per shop.
+
+In the app, tick several results and the button becomes **Track N together** —
+one group, one row, one chart. That works for the same product at several shops
+*and* for several competing products; the app tells them apart by whether the
+members share a title, and says "5 shops" or "5 products compared" accordingly.
+
+Each line gets its own colour from a fixed palette, checked for colour-blind
+separation and contrast against both themes rather than eyeballed. Green stays
+reserved for the target line and the "cheapest" tag, and every line is named
+with its price in the legend, so nothing depends on colour alone.
 
 **Missed a shop?** Add it to the group by URL:
 

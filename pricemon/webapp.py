@@ -323,10 +323,22 @@ class Handler(BaseHTTPRequestHandler):
             from .search import rank_with_ai, search
 
             cfg = config_mod.load()
+            llm = LLM(cfg["llm"])
+            plan: dict = {}
+
+            def note_plan(products, reading):
+                plan.update({"products": products, "reading": reading})
+
             try:
-                results = search(query, cfg, limit=int(params.get("limit") or 5))
-                if params.get("ai", "1") != "0":
-                    results = rank_with_ai(query, results, LLM(cfg["llm"]))
+                results = search(
+                    query,
+                    cfg,
+                    limit=int(params.get("limit") or 5),
+                    llm=llm if params.get("ai", "1") != "0" else None,
+                    on_plan=note_plan,
+                )
+                if params.get("ai", "1") != "0" and not plan:
+                    results = rank_with_ai(query, results, llm)
             except Exception as exc:  # noqa: BLE001 - surface it in the UI
                 return self._json({"error": f"search failed: {exc}"}, 502)
             from .search import normalize_query
@@ -335,6 +347,7 @@ class Handler(BaseHTTPRequestHandler):
                 {
                     "query": query,
                     "query_used": normalize_query(query),
+                    "plan": plan,
                     "results": [
                         {
                             "title": r.title,
@@ -345,6 +358,7 @@ class Handler(BaseHTTPRequestHandler):
                             "in_stock": r.in_stock,
                             "note": r.note,
                             "method": r.method,
+                            "matched": r.matched,
                         }
                         for r in results
                     ],
@@ -357,6 +371,9 @@ class Handler(BaseHTTPRequestHandler):
         route = urlparse(self.path)
         path = route.path
         body = self._body()
+
+        if path == "/api/products/group":
+            return self._add_group(body)
 
         if path == "/api/products":
             return self._add_product(body)
@@ -447,6 +464,73 @@ class Handler(BaseHTTPRequestHandler):
         return self._json({"removed": removed})
 
     # -- helpers ----------------------------------------------------------
+    def _add_group(self, body: dict) -> None:
+        """Track several pages together, as one thing to compare.
+
+        Either the same product at several shops, or several products in the
+        same category - the group holds both, and the app tells them apart by
+        whether the members share a title.
+        """
+        urls = [u for u in (body.get("urls") or []) if isinstance(u, str)]
+        if len(urls) < 2:
+            return self._json({"error": "pick at least two to compare"}, 400)
+
+        cfg = config_mod.load()
+        store = self._store()
+        added: list[dict] = []
+        failed: list[dict] = []
+        try:
+            agent = Agent(store, cfg, verbose=False)
+            group = _slug(body.get("name") or "") or None
+            raw_target = body.get("target_price")
+            target = None if raw_target in ("", None) else float(raw_target)
+
+            for raw_url in urls[:12]:
+                url = sites.canonical_url(raw_url)
+                try:
+                    extraction, _ = agent.scrape(url, use_llm=False)
+                except Exception as exc:  # noqa: BLE001 - one bad shop is not fatal
+                    failed.append({"url": url, "error": str(exc)[:160]})
+                    continue
+
+                group = group or _slug(extraction.title or _derive_name(url, None))
+                rule = sites.match(url)
+                retailer = (
+                    rule.name if rule else urlparse(url).netloc.replace("www.", "")
+                )
+                name = f"{group}@{_slug(retailer, 20)}"
+                base, suffix = name, 2
+                while store.get_product(name):
+                    name = f"{base}-{suffix}"
+                    suffix += 1
+
+                product = Product(
+                    name=name,
+                    url=url,
+                    title=extraction.title,
+                    image=extraction.image,
+                    group=group,
+                    target_price=target,
+                    currency=extraction.currency,
+                    last_price=extraction.price,
+                    last_in_stock=extraction.in_stock,
+                    last_checked=datetime.now(timezone.utc).isoformat(
+                        timespec="seconds"
+                    ),
+                )
+                store.add_product(product)
+                if extraction.ok:
+                    store.record(product, extraction)
+                added.append(_product_payload(store, product))
+        finally:
+            store.close()
+
+        if not added:
+            return self._json(
+                {"error": "none of those pages gave a price", "failed": failed}, 422
+            )
+        return self._json({"group": group, "added": added, "failed": failed}, 201)
+
     def _add_product(self, body: dict) -> None:
         url = (body.get("url") or "").strip()
         if not url.startswith(("http://", "https://")):
@@ -511,6 +595,12 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"error": "not found"}, 404)
         ctype, _ = mimetypes.guess_type(str(target))
         self._send(200, target.read_bytes(), ctype or "application/octet-stream")
+
+
+def _slug(text: str, limit: int = 40) -> str:
+    import re
+
+    return re.sub(r"[^a-z0-9]+", "-", (text or "").lower()).strip("-")[:limit]
 
 
 def _derive_name(url: str, title: str | None) -> str:

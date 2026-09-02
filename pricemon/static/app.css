@@ -17,6 +17,15 @@
   --rise: #a54b31;
   --rise-bg: #f7eae5;
   --focus: #15161a;
+  /* Categorical series colours for comparing several products in one chart.
+     Fixed order, never cycled. Validated for colour-blind separation and
+     contrast against this surface; green stays reserved for the target line,
+     so a series is never mistaken for "at target". */
+  --series-1: #2a78d6;
+  --series-2: #eb6834;
+  --series-3: #1baf7a;
+  --series-4: #eda100;
+  --series-5: #e87ba4;
   --radius: 10px;
   --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Cantarell, Ubuntu,
           "Helvetica Neue", Arial, sans-serif;
@@ -37,6 +46,12 @@
   --rise: #dd8064;
   --rise-bg: #291a16;
   --focus: #ebecec;
+  /* Re-stepped for the dark surface, not an automatic flip. */
+  --series-1: #3987e5;
+  --series-2: #d95926;
+  --series-3: #199e70;
+  --series-4: #c98500;
+  --series-5: #d55181;
 }
 
 * { box-sizing: border-box; }
@@ -194,14 +209,19 @@ select.sort { height: 32px; border: 1px solid var(--rule-2); border-radius: 7px;
 }
 .legend { display: flex; flex-direction: column; margin-top: 10px; }
 .legend-row {
-  display: grid; grid-template-columns: 18px minmax(0,1fr) auto;
+  display: grid; grid-template-columns: 22px minmax(0,1fr) auto;
   align-items: center; gap: 9px; padding: 7px 0;
   border-bottom: 1px solid var(--rule); cursor: pointer;
 }
 .legend-row:last-child { border-bottom: 0; }
 .legend-row:hover .shop { color: var(--ink); }
-.legend-row .swatch { height: 2px; border-radius: 2px; background: var(--ink-3); }
-.legend-row.best .swatch { background: var(--drop); height: 3px; }
+.legend-row .swatch { height: 3px; border-radius: 2px; background: var(--ink-3); }
+.legend-row.best .swatch { height: 4px; }
+.legend-row .tag-best {
+  font-family: var(--mono); font-size: 9px; letter-spacing: .06em;
+  text-transform: uppercase; color: var(--drop); border: 1px solid var(--drop);
+  border-radius: 3px; padding: 0 4px; margin-left: 6px; white-space: nowrap;
+}
 .legend-row .shop {
   font-size: 12.5px; color: var(--ink-2); white-space: nowrap;
   overflow: hidden; text-overflow: ellipsis;
@@ -285,6 +305,8 @@ dialog::backdrop { background: rgba(12,12,14,.4); }
 .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .results { margin-top: 12px; max-height: 230px; overflow-y: auto;
   border: 1px solid var(--rule); border-radius: 8px; }
+.result .pick { font-family: var(--mono); color: var(--ink-3); width: 12px; }
+.result.on .pick { color: var(--ink); }
 .result { display: flex; gap: 10px; align-items: center; padding: 9px 11px;
   border-bottom: 1px solid var(--rule); cursor: pointer; }
 .result:last-child { border-bottom: 0; }

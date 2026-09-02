@@ -159,19 +159,40 @@ def cmd_add(args) -> int:
     return 0
 
 
+def _show_plan(products: list[str], reading: str) -> None:
+    """Say what a vague ask was taken to mean, and what it went looking for."""
+    if reading:
+        print(f"{DIM}  reading that as: {reading}{RESET}")
+    for product in products:
+        print(f"{DIM}    → {product}{RESET}")
+
+
 def cmd_search(args) -> int:
-    from .search import normalize_query, rank_with_ai, search
+    from .llm import LLM
+    from .search import looks_vague, normalize_query, rank_with_ai, search
 
     store, cfg = _open(args)
     store.close()
     used = normalize_query(args.query)
-    print(f"searching for {used!r} ...")
-    if used.lower() != args.query.strip().lower():
+    vague = looks_vague(args.query)
+    print(
+        f"searching for {used!r} ..."
+        if not vague
+        else f"working out what {args.query!r} means ..."
+    )
+    if not vague and used.lower() != args.query.strip().lower():
         print(
             f"{DIM}  (shortened from the {len(args.query)} characters you gave — "
             f"brand and model is what finds a product){RESET}"
         )
-    results = search(args.query, cfg, retailers=args.retailer or None, limit=args.limit)
+    results = search(
+        args.query,
+        cfg,
+        retailers=args.retailer or None,
+        limit=args.limit,
+        llm=None if args.no_llm else LLM(cfg["llm"]),
+        on_plan=_show_plan,
+    )
     if not results:
         print("no product pages found - try more specific words, or a brand name")
         return 1
@@ -211,8 +232,15 @@ def cmd_compare(args) -> int:
     if used.lower() != args.query.strip().lower():
         print(f"{DIM}  (shortened from what you gave){RESET}")
     try:
+        from .llm import LLM
+
         results = search(
-            args.query, cfg, retailers=args.retailer or None, limit=args.shops * 2
+            args.query,
+            cfg,
+            retailers=args.retailer or None,
+            limit=args.shops * 2,
+            llm=None if args.no_llm else LLM(cfg["llm"]),
+            on_plan=_show_plan,
         )
     except SearchBlocked as exc:
         print(f"error: {exc}", file=sys.stderr)

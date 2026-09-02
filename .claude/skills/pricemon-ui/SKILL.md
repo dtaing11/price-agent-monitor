@@ -83,11 +83,17 @@ When one member's price is a fraction of the rest it is almost always a
 different variant rather than a deal, and the panel says so in `--rise` above
 the saving line. Never present that as a bargain.
 
-The chart obeys the same colour rule as everything else. The cheapest shop is
-`--drop` and solid; every other shop is `--ink-3`, told apart by **dash
-pattern**, never by inventing a palette. The legend swatch repeats the line's
-dash so the two read as one thing. Clicking a legend row drops into that one
-shop's own history.
+Comparison lines are the one place hue means identity rather than direction.
+Each member takes the next `--series-N` slot in fixed order, never cycled; past
+five, extras fall back to `--ink-3` with a dash pattern rather than a reused
+colour, since two lines in one colour would claim to be the same thing. Green
+stays reserved for the target line and the "cheapest" tag.
+
+Those five slots are a validated categorical palette - colour-blind separation
+and contrast were computed against both surfaces, not judged by eye. If you
+change them, re-run that check. Some light-mode slots sit below 3:1 contrast,
+which is exactly why every line is also named with its price in the legend:
+identity must never rest on colour alone.
 
 ## Settings
 
