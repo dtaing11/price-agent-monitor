@@ -13,6 +13,7 @@ from typing import Any
 from bs4 import BeautifulSoup, FeatureNotFound
 from soupsieve import SelectorSyntaxError
 
+from . import sites
 from .models import Extraction
 from .money import parse_price
 
@@ -473,12 +474,173 @@ def from_heuristics(soup: BeautifulSoup) -> list[Extraction]:
 
 
 # --------------------------------------------------------------------------
+# Strategy: a known retailer's own markup
+# --------------------------------------------------------------------------
+def from_site_rule(soup: BeautifulSoup, url: str) -> Extraction | None:
+    rule = sites.match(url)
+    if rule is None:
+        return None
+    for sel in rule.price:
+        got = from_selector(soup, sel, method=f"site:{rule.name}", confidence=0.92)
+        if got:
+            got.currency = got.currency or rule.currency
+            if rule.title:
+                for tsel in rule.title:
+                    el = soup.select_one(tsel)
+                    if el and el.get_text(strip=True):
+                        got.title = el.get_text(" ", strip=True)[:200]
+                        break
+            if any(soup.select_one(s) is not None for s in rule.out_of_stock):
+                got.in_stock = False
+            elif any(soup.select_one(s) is not None for s in rule.in_stock):
+                got.in_stock = True
+            got.note = f"{rule.name} selector"
+            return got
+    return None
+
+
+# --------------------------------------------------------------------------
+# Strategy: product JSON embedded in the page (Next.js, Nuxt, Redux dumps)
+# --------------------------------------------------------------------------
+PRICE_KEYS = {
+    "currentprice": 1.0,
+    "saleprice": 0.95,
+    "finalprice": 0.95,
+    "priceamount": 0.9,
+    "price": 0.8,
+    "listprice": 0.5,
+    "wasprice": 0.3,
+    "regularprice": 0.4,
+    "minprice": 0.6,
+    "displayprice": 0.85,
+    "pricevalue": 0.85,
+}
+CURRENCY_KEYS = ("currency", "currencyunit", "currencycode", "pricecurrency")
+GOOD_PATH = ("priceinfo", "currentprice", "offers", "product", "pricing", "buybox")
+BAD_PATH = (
+    "shipping",
+    "recommend",
+    "similar",
+    "related",
+    "carousel",
+    "review",
+    "variant",
+    "installment",
+    "warranty",
+    "protection",
+    "addon",
+    "bundle",
+    "subscription",
+    "tax",
+    "fee",
+    "seller",
+)
+_JSON_SCRIPT_RE = re.compile(
+    r"(?:window\.)?__(?:NEXT_DATA__|PRELOADED_STATE__|INITIAL_STATE__|"
+    r"NUXT__|APOLLO_STATE__)\s*=\s*(\{.*?\})\s*(?:;|</script>)",
+    re.DOTALL,
+)
+
+
+def _json_blobs(soup: BeautifulSoup, html: str) -> list[dict]:
+    blobs: list[dict] = []
+    for tag in soup.find_all("script"):
+        stype = (attr_str(tag, "type") or "").lower()
+        sid = (attr_str(tag, "id") or "").lower()
+        raw = tag.string or tag.get_text() or ""
+        if not raw.strip():
+            continue
+        if "json" in stype or sid in ("__next_data__", "__nuxt_data__"):
+            try:
+                parsed = json.loads(raw)
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if isinstance(parsed, dict):
+                blobs.append(parsed)
+    for m in _JSON_SCRIPT_RE.finditer(html):
+        try:
+            parsed = json.loads(m.group(1))
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if isinstance(parsed, dict):
+            blobs.append(parsed)
+    return blobs
+
+
+def _scan_json(
+    node: Any,
+    path: str,
+    out: list[tuple[float, float, str | None, str]],
+    depth: int = 0,
+) -> None:
+    if depth > 12 or len(out) > 400:
+        return
+    if isinstance(node, dict):
+        currency = None
+        for ck in CURRENCY_KEYS:
+            for key, val in node.items():
+                if key.lower() == ck and isinstance(val, str) and 2 <= len(val) <= 4:
+                    currency = val.upper()
+                    break
+            if currency:
+                break
+        for key, val in node.items():
+            lkey = key.lower().replace("_", "")
+            weight = PRICE_KEYS.get(lkey)
+            if weight and isinstance(val, (int, float, str)):
+                price, cur = parse_price(str(val))
+                if price is not None and 0 < price < 10_000_000:
+                    lpath = (path + "." + key).lower()
+                    score = 0.55 * weight
+                    score += 0.12 if any(g in lpath for g in GOOD_PATH) else 0.0
+                    score -= 0.45 if any(b in lpath for b in BAD_PATH) else 0.0
+                    score -= min(depth, 10) * 0.012
+                    out.append((score, price, currency or cur, path + "." + key))
+            _scan_json(val, f"{path}.{key}", out, depth + 1)
+    elif isinstance(node, list):
+        for i, val in enumerate(node[:40]):
+            _scan_json(val, f"{path}[{i}]", out, depth + 1)
+
+
+def from_embedded_json(soup: BeautifulSoup, html: str) -> Extraction | None:
+    """Read the price out of a page's own JSON payload.
+
+    Modern storefronts ship the product as JSON and render it client-side; the
+    number is in the HTML, just not in a tag we can select.
+    """
+    candidates: list[tuple[float, float, str | None, str]] = []
+    for blob in _json_blobs(soup, html)[:6]:
+        _scan_json(blob, "$", candidates)
+    if not candidates:
+        return None
+    candidates.sort(key=lambda c: -c[0])
+    score, price, currency, path = candidates[0]
+    if score < 0.25:
+        return None
+    return Extraction(
+        price=price,
+        currency=currency,
+        method="embedded-json",
+        confidence=min(0.70, max(0.35, score)),
+        note=f"embedded JSON at {path[:80]}",
+    )
+
+
+# --------------------------------------------------------------------------
 def extract(
-    html: str, selector: str | None = None, learned_selector: str | None = None
+    html: str,
+    selector: str | None = None,
+    learned_selector: str | None = None,
+    url: str | None = None,
 ) -> tuple[Extraction, list[Extraction]]:
     """Run every deterministic strategy; return (best, all candidates)."""
     soup = _soup(html)
     candidates: list[Extraction] = []
+
+    if url:
+        site_hit = from_site_rule(soup, url)
+        if site_hit:
+            candidates.append(site_hit)
 
     for sel, method, conf in (
         (selector, "selector", 0.95),
@@ -493,6 +655,9 @@ def extract(
         got = fn(soup)
         if got:
             candidates.append(got)
+    embedded = from_embedded_json(soup, html)
+    if embedded:
+        candidates.append(embedded)
     candidates.extend(from_heuristics(soup))
 
     title = page_title(soup)

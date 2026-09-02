@@ -38,6 +38,7 @@ class Agent:
             html,
             selector=product.selector if product else None,
             learned_selector=product.learned_selector if product else None,
+            url=final_url,
         )
 
         needs_help = (not best.ok) or best.confidence < LLM_CONFIDENCE_FLOOR
