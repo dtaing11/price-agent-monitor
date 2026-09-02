@@ -153,5 +153,30 @@ def uninstall() -> bool:
     return _windows_uninstall() if is_windows() else cron.uninstall()
 
 
+def status() -> dict:
+    """What is scheduled right now, for display in the app."""
+    times: list[str] = []
+    if is_windows():
+        for name in _windows_existing_tasks():
+            digits = name.replace(TASK_PREFIX, "").strip()
+            if len(digits) == 4 and digits.isdigit():
+                times.append(f"{digits[:2]}:{digits[2:]}")
+    else:
+        for line in cron.current_crontab().splitlines():
+            if "pricemon check --quiet" not in line:
+                continue
+            parts = line.split()
+            if len(parts) >= 2 and parts[0].isdigit() and parts[1].isdigit():
+                times.append(f"{int(parts[1]):02d}:{int(parts[0]):02d}")
+    times.sort()
+    return {
+        "installed": bool(times),
+        "times": times,
+        "mechanism": "Windows Task Scheduler" if is_windows() else "cron",
+        "log": str(log_file()),
+        "verify": verify_hint(),
+    }
+
+
 def verify_hint() -> str:
     return 'schtasks /Query /TN "PriceMonitor 0800"' if is_windows() else "crontab -l"

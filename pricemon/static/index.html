@@ -19,6 +19,7 @@
     </div>
     <div class="spacer"></div>
     <div class="headline" id="headline"></div>
+    <button class="btn quiet icon-btn" id="btn-settings" title="Settings" aria-label="Settings">⚙</button>
     <button class="btn quiet icon-btn" id="btn-theme" title="Switch theme" aria-label="Switch theme">◐</button>
     <button class="btn" id="btn-check">Check now</button>
     <button class="btn primary" id="btn-add">Track a product</button>
@@ -112,6 +113,151 @@
     <div class="dlg-foot">
       <button class="btn quiet" value="cancel" formnovalidate>Cancel</button>
       <button class="btn primary" id="btn-add-go" value="add">Start tracking</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="dlg-settings">
+  <form method="dialog" id="form-settings">
+    <div class="dlg-head">
+      <h3>Settings</h3>
+      <p>Where alerts go, and when the agent checks.</p>
+    </div>
+
+    <div class="dlg-body settings">
+      <div class="chips" id="settings-tabs" style="margin:14px 0 6px">
+        <button type="button" class="chip on" data-pane="alerts">Alerts</button>
+        <button type="button" class="chip" data-pane="schedule">Schedule</button>
+        <button type="button" class="chip" data-pane="rules">Rules</button>
+      </div>
+
+      <!-- where alerts go -->
+      <div id="pane-alerts">
+        <div class="setting">
+          <label class="switch"><input type="checkbox" id="s-desktop"> Desktop notifications</label>
+          <div class="hint">A pop-up on this machine. Only useful while you are at it.</div>
+        </div>
+
+        <h4 class="group">Phone</h4>
+        <label for="s-ntfy-topic">ntfy topic <span class="dim">— install the ntfy app, subscribe to this name</span></label>
+        <input type="text" id="s-ntfy-topic" placeholder="something-unguessable-4821">
+        <div class="row2">
+          <div>
+            <label for="s-ntfy-server">ntfy server</label>
+            <input type="text" id="s-ntfy-server" placeholder="https://ntfy.sh">
+          </div>
+          <div>
+            <label for="s-ntfy-token">Access token <span class="dim">— only for private servers</span></label>
+            <input type="password" id="s-ntfy-token" placeholder="none">
+          </div>
+        </div>
+        <div class="row2">
+          <div>
+            <label for="s-tg-token">Telegram bot token <span class="dim">— from @BotFather</span></label>
+            <input type="password" id="s-tg-token" placeholder="none">
+          </div>
+          <div>
+            <label for="s-tg-chat">Telegram chat id</label>
+            <input type="text" id="s-tg-chat" placeholder="none">
+          </div>
+        </div>
+
+        <h4 class="group">Email</h4>
+        <div class="row2">
+          <div>
+            <label for="s-mail-host">SMTP server</label>
+            <input type="text" id="s-mail-host" placeholder="smtp.gmail.com">
+          </div>
+          <div>
+            <label for="s-mail-port">Port</label>
+            <input type="number" id="s-mail-port" placeholder="587">
+          </div>
+        </div>
+        <div class="row2">
+          <div>
+            <label for="s-mail-user">Username</label>
+            <input type="text" id="s-mail-user" placeholder="you@gmail.com">
+          </div>
+          <div>
+            <label for="s-mail-pass">Password <span class="dim">— an app password, not your login</span></label>
+            <input type="password" id="s-mail-pass" placeholder="none">
+          </div>
+        </div>
+        <div class="row2">
+          <div>
+            <label for="s-mail-to">Send alerts to</label>
+            <input type="text" id="s-mail-to" placeholder="you@gmail.com">
+          </div>
+          <div>
+            <label for="s-mail-from">From <span class="dim">— optional</span></label>
+            <input type="text" id="s-mail-from" placeholder="same as username">
+          </div>
+        </div>
+
+        <h4 class="group">Webhook</h4>
+        <label for="s-webhook">Slack or Discord webhook URL</label>
+        <input type="text" id="s-webhook" placeholder="https://hooks.slack.com/…">
+
+        <div class="actions">
+          <button type="button" class="btn sm" id="btn-test-notify">Send a test alert</button>
+          <span class="hint" id="test-result"></span>
+        </div>
+      </div>
+
+      <!-- when it checks -->
+      <div id="pane-schedule" hidden>
+        <div class="setting">
+          <label class="switch"><input type="checkbox" id="s-sched-on"> Check automatically</label>
+          <div class="hint" id="sched-mechanism"></div>
+        </div>
+        <label for="s-sched-times">At these times, every day</label>
+        <input type="text" id="s-sched-times" placeholder="08:00,20:00">
+        <div class="hint">Comma separated, 24-hour. Runs are silent unless something changed.</div>
+        <div class="hint" id="sched-status" style="margin-top:10px"></div>
+      </div>
+
+      <!-- what counts as worth telling you -->
+      <div id="pane-rules" hidden>
+        <div class="row2">
+          <div>
+            <label for="s-drop">Tell me about drops of at least</label>
+            <input type="number" id="s-drop" step="0.5" min="0" placeholder="5">
+            <div class="hint">Percent, against the previous check.</div>
+          </div>
+          <div>
+            <label for="s-implausible">Double-check moves bigger than</label>
+            <input type="number" id="s-implausible" step="5" min="0" placeholder="65">
+            <div class="hint">Percent. Re-read before alerting. 0 turns it off.</div>
+          </div>
+        </div>
+        <div class="setting">
+          <label class="switch"><input type="checkbox" id="s-rise"> Also tell me when a price rises</label>
+        </div>
+        <div class="setting">
+          <label class="switch"><input type="checkbox" id="s-stock"> Tell me about stock changes</label>
+        </div>
+        <div class="row2">
+          <div>
+            <label for="s-workers">Sites checked at once</label>
+            <input type="number" id="s-workers" min="1" max="24" placeholder="6">
+          </div>
+          <div>
+            <label for="s-delay">Seconds between hits on one shop</label>
+            <input type="number" id="s-delay" step="0.5" min="0" placeholder="3">
+          </div>
+        </div>
+        <div class="setting">
+          <label class="switch"><input type="checkbox" id="s-robots"> Respect robots.txt</label>
+        </div>
+        <div class="hint" id="settings-home"></div>
+      </div>
+
+      <div class="err" id="settings-err" hidden></div>
+    </div>
+
+    <div class="dlg-foot">
+      <button class="btn quiet" value="cancel" formnovalidate>Cancel</button>
+      <button class="btn primary" id="btn-settings-save" value="save">Save settings</button>
     </div>
   </form>
 </dialog>

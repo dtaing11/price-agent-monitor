@@ -674,6 +674,124 @@ $("#form-add").addEventListener("submit", async (ev) => {
   } finally { btn.disabled = false; btn.textContent = "Start tracking"; }
 });
 
+/* ---------------- settings ---------------- */
+const dlgSettings = $("#dlg-settings");
+const val = (id) => $(id).value.trim();
+const setVal = (id, v) => { $(id).value = v == null ? "" : String(v); };
+const setChecked = (id, v) => { $(id).checked = Boolean(v); };
+
+function showPane(pane) {
+  ["alerts", "schedule", "rules"].forEach((name) => {
+    $(`#pane-${name}`).hidden = name !== pane;
+  });
+  [...$("#settings-tabs").children].forEach((b) => b.classList.toggle("on", b.dataset.pane === pane));
+}
+$("#settings-tabs").onclick = (e) => { const b = e.target.closest("button"); if (b) showPane(b.dataset.pane); };
+
+async function openSettings() {
+  $("#settings-err").hidden = true;
+  $("#test-result").textContent = "";
+  showPane("alerts");
+  const [cfg, sched] = await Promise.all([api("/api/settings"), api("/api/schedule")]);
+
+  const n = cfg.notify || {}, ntfy = n.ntfy || {}, tg = n.telegram || {}, mail = n.email || {};
+  setChecked("#s-desktop", n.desktop);
+  setVal("#s-ntfy-topic", ntfy.topic);
+  setVal("#s-ntfy-server", ntfy.server);
+  setVal("#s-ntfy-token", ntfy.token);
+  setVal("#s-tg-token", tg.bot_token);
+  setVal("#s-tg-chat", tg.chat_id);
+  setVal("#s-mail-host", mail.host);
+  setVal("#s-mail-port", mail.port);
+  setVal("#s-mail-user", mail.user);
+  setVal("#s-mail-pass", mail.password);
+  setVal("#s-mail-to", mail.to);
+  setVal("#s-mail-from", mail.from);
+  setVal("#s-webhook", n.webhook_url);
+
+  const a = cfg.alerts || {}, f = cfg.fetch || {};
+  setVal("#s-drop", a.drop_pct);
+  setVal("#s-implausible", a.implausible_pct);
+  setChecked("#s-rise", a.notify_price_rise);
+  setChecked("#s-stock", a.notify_stock_change);
+  setVal("#s-workers", f.workers);
+  setVal("#s-delay", f.min_delay_per_domain);
+  setChecked("#s-robots", f.respect_robots);
+  $("#settings-home").textContent = `Everything is stored in ${cfg.home}`;
+
+  setChecked("#s-sched-on", sched.installed);
+  setVal("#s-sched-times", sched.times.join(",") || "08:00,20:00");
+  $("#sched-mechanism").textContent = `Uses ${sched.mechanism} on this machine.`;
+  $("#sched-status").textContent = sched.installed
+    ? `Scheduled at ${sched.times.join(" and ")}. Log: ${sched.log}`
+    : "Not scheduled — the agent only checks when you ask it to.";
+
+  dlgSettings.showModal();
+}
+
+$("#btn-settings").onclick = () => openSettings().catch((e) => alert(e.message));
+
+$("#btn-test-notify").onclick = async () => {
+  const out = $("#test-result");
+  out.textContent = "Saving and sending…";
+  try {
+    await saveSettings();            // test what is on screen, not what was stored
+    await api("/api/test-notify", "POST", {});
+    out.textContent = "Sent. If nothing arrives, check the details above.";
+  } catch (e) {
+    out.textContent = e.message;
+  }
+};
+
+async function saveSettings() {
+  const payload = {
+    notify: {
+      desktop: $("#s-desktop").checked,
+      webhook_url: val("#s-webhook"),
+      ntfy: { topic: val("#s-ntfy-topic"), server: val("#s-ntfy-server"), token: val("#s-ntfy-token") },
+      telegram: { bot_token: val("#s-tg-token"), chat_id: val("#s-tg-chat") },
+      email: val("#s-mail-host") ? {
+        host: val("#s-mail-host"), port: Number(val("#s-mail-port")) || 587,
+        user: val("#s-mail-user"), password: val("#s-mail-pass"),
+        to: val("#s-mail-to"), from: val("#s-mail-from"),
+      } : null,
+    },
+    alerts: {
+      drop_pct: Number(val("#s-drop")) || 0,
+      implausible_pct: Number(val("#s-implausible")) || 0,
+      notify_price_rise: $("#s-rise").checked,
+      notify_stock_change: $("#s-stock").checked,
+    },
+    fetch: {
+      workers: Number(val("#s-workers")) || 6,
+      min_delay_per_domain: Number(val("#s-delay")) || 3,
+      respect_robots: $("#s-robots").checked,
+    },
+  };
+  return api("/api/settings", "POST", payload);
+}
+
+$("#form-settings").addEventListener("submit", async (ev) => {
+  if (ev.submitter && ev.submitter.value === "cancel") return;
+  ev.preventDefault();
+  const btn = $("#btn-settings-save"), err = $("#settings-err");
+  err.hidden = true; btn.disabled = true; btn.textContent = "Saving…";
+  try {
+    await saveSettings();
+    await api("/api/schedule", "POST", {
+      enabled: $("#s-sched-on").checked,
+      times: val("#s-sched-times") || "08:00,20:00",
+    });
+    dlgSettings.close();
+    await refresh();
+  } catch (e) {
+    err.textContent = e.message;
+    err.hidden = false;
+  } finally {
+    btn.disabled = false; btn.textContent = "Save settings";
+  }
+});
+
 /* ---------------- chrome ---------------- */
 $("#btn-check").onclick = async () => { await api("/api/check", "POST", {}); state.job.busy = true; renderHeadline(); poll(); };
 $("#search").oninput = (e) => { state.query = e.target.value; renderLedger(); };
@@ -695,11 +813,12 @@ try { setTheme(localStorage.getItem(THEME) || (matchMedia("(prefers-color-scheme
 catch { setTheme("light"); }
 
 document.addEventListener("keydown", (e) => {
-  if (dlg.open) return;
+  if (dlg.open || dlgSettings.open) return;
+  if (e.key === "," && (e.metaKey || e.ctrlKey)) { e.preventDefault(); openSettings(); }
   if (e.key === "/" && document.activeElement !== $("#search")) { e.preventDefault(); $("#search").focus(); }
   if (e.key === "Escape") { state.selected = null; state.selectedGroup = null; render(); }
   if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "n") { e.preventDefault(); openAdd(); }
 });
 
 refresh().then(() => { if (state.job.busy) poll(); });
-setInterval(() => { if (!state.job.busy && !dlg.open) refresh(); }, 20000);
+setInterval(() => { if (!state.job.busy && !dlg.open && !dlgSettings.open) refresh(); }, 20000);

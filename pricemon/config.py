@@ -100,6 +100,22 @@ def load() -> dict[str, Any]:
         return _merge(DEFAULTS, yaml.safe_load(fh) or {})
 
 
+def save(cfg: dict[str, Any]) -> Path:
+    """Write settings back to config.yaml.
+
+    The file is generated rather than hand-maintained, so a plain dump is
+    lossless. Written to a temporary file and moved into place so a crash
+    mid-write cannot leave you with half a config.
+    """
+    ensure_home()
+    path = config_path()
+    tmp = path.with_suffix(".yaml.tmp")
+    with tmp.open("w") as fh:
+        yaml.safe_dump(cfg, fh, sort_keys=False, allow_unicode=True)
+    tmp.replace(path)
+    return path
+
+
 def ensure_home() -> Path:
     h = home()
     h.mkdir(parents=True, exist_ok=True)

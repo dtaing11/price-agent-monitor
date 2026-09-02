@@ -162,6 +162,73 @@ def _product_payload(store: Store, product: Product, history_limit: int = 400) -
     }
 
 
+MASK = "••••••••"
+SECRET_FIELDS = (
+    ("ntfy", "token"),
+    ("telegram", "bot_token"),
+    ("email", "password"),
+)
+
+
+def _settings_payload() -> dict:
+    """Current settings for the UI, with secrets masked.
+
+    The app is served on localhost only, but there is no reason to hand a
+    password back out just to render a form - the mask goes out, and a field
+    still holding the mask on save means "leave it as it was".
+    """
+    cfg = config_mod.load()
+    notify_cfg = json.loads(json.dumps(cfg["notify"]))  # deep copy
+    for section, field in SECRET_FIELDS:
+        holder = notify_cfg.get(section) or {}
+        if isinstance(holder, dict) and holder.get(field):
+            holder[field] = MASK
+    return {
+        "notify": notify_cfg,
+        "alerts": cfg["alerts"],
+        "fetch": {
+            "workers": cfg["fetch"].get("workers"),
+            "min_delay_per_domain": cfg["fetch"].get("min_delay_per_domain"),
+            "browser": cfg["fetch"].get("browser"),
+            "respect_robots": cfg["fetch"].get("respect_robots"),
+        },
+        "llm": {"backend": cfg["llm"].get("backend"), "model": cfg["llm"].get("model")},
+        "home": str(config_mod.home()),
+    }
+
+
+def _apply_settings(body: dict) -> dict:
+    """Merge what the form sent into config.yaml, keeping masked secrets."""
+    cfg = config_mod.load()
+    incoming = body or {}
+
+    for group in ("notify", "alerts", "fetch", "llm"):
+        section = incoming.get(group)
+        if not isinstance(section, dict):
+            continue
+        for key, value in section.items():
+            if isinstance(value, dict):
+                current = cfg[group].get(key)
+                cfg[group][key] = dict(current) if isinstance(current, dict) else {}
+                for sub_key, sub_value in value.items():
+                    if sub_value == MASK:
+                        continue  # unchanged secret
+                    cfg[group][key][sub_key] = _clean(sub_value)
+            else:
+                cfg[group][key] = _clean(value)
+
+    config_mod.save(cfg)
+    return _settings_payload()
+
+
+def _clean(value):
+    """Empty strings mean "not set", and numbers arrive from forms as strings."""
+    if isinstance(value, str):
+        stripped = value.strip()
+        return stripped or None
+    return value
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "pricemon"
 
@@ -236,6 +303,14 @@ class Handler(BaseHTTPRequestHandler):
                 }
             )
 
+        if path == "/api/settings":
+            return self._json(_settings_payload())
+
+        if path == "/api/schedule":
+            from . import schedule
+
+            return self._json(schedule.status())
+
         if path == "/api/job":
             return self._json(JOBS.snapshot())
 
@@ -286,6 +361,33 @@ class Handler(BaseHTTPRequestHandler):
             names = body.get("names")
             started = JOBS.start(names or None, config_mod.load())
             return self._json({"started": started, "job": JOBS.snapshot()})
+
+        if path == "/api/settings":
+            try:
+                saved = _apply_settings(body)
+            except (ValueError, KeyError) as exc:
+                return self._json({"error": str(exc)}, 400)
+            return self._json(saved)
+
+        if path == "/api/schedule":
+            from . import cron as cron_mod
+            from . import schedule
+
+            try:
+                if body.get("enabled"):
+                    times = cron_mod.parse_times(body.get("times") or "08:00,20:00")
+                    schedule.install(times)
+                else:
+                    schedule.uninstall()
+            except (ValueError, RuntimeError) as exc:
+                return self._json({"error": str(exc)}, 400)
+            return self._json(schedule.status())
+
+        if path == "/api/test-notify":
+            from . import notify
+
+            notify.test({**config_mod.load()["notify"], "console": False})
+            return self._json({"sent": True})
 
         if path == "/api/report":
             from .report import build_report

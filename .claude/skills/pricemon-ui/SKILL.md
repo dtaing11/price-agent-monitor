@@ -85,6 +85,20 @@ pattern**, never by inventing a palette. The legend swatch repeats the line's
 dash so the two read as one thing. Clicking a legend row drops into that one
 shop's own history.
 
+## Settings
+
+Settings are a dialog (⚙ in the title bar), not a drawer tab - forms need the
+width. Three panes behind chip tabs: Alerts, Schedule, Rules. Anything the CLI
+can configure should be reachable here; a desktop app should not require
+hand-editing YAML.
+
+Secrets (`password`, `token`, `bot_token`) are masked on load and skipped on
+save when the field still holds the mask, so opening settings never hands a
+stored password back to the page. Group headings use the mono micro-label
+style; every field gets a plain-language label and, where a value is easy to
+get wrong, a one-line hint saying where to find it ("from @BotFather", "an app
+password, not your login").
+
 ## Writing
 
 Sentence case, plain verbs, no exclamation marks. Name things the way a shopper

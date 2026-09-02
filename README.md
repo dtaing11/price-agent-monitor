@@ -131,6 +131,24 @@ default browser. (One cosmetic wrinkle on macOS: the Dock and menu bar may
 still read "Python" even though the window is titled Price Monitor — that is
 how framework Python builds identify themselves.)
 
+**Settings live in the app** — the ⚙ button, or ⌘/Ctrl-comma. Three tabs:
+
+- **Alerts** — desktop pop-ups, phone (ntfy topic or Telegram bot), email
+  (SMTP host, port, credentials, recipient) and a Slack/Discord webhook, with a
+  *Send a test alert* button that saves what is on screen and fires it through
+  every channel you filled in.
+- **Schedule** — a switch and a list of times. Turning it on writes the cron
+  entries (or Windows Scheduled Tasks) for you; turning it off removes them.
+  It shows what is currently scheduled and where the log is.
+- **Rules** — how big a drop is worth telling you about, when to double-check
+  an implausible move, whether rises and stock changes count, how many sites to
+  check at once, and how gently to treat one shop.
+
+Secrets are masked when the form loads and only overwritten if you type
+something new, so opening settings never hands your SMTP password back out.
+Everything still lives in `~/.price-monitor/config.yaml` if you prefer editing
+it directly.
+
 Inside it you get every tracked product in one ledger: price, how far it has
 moved, a gauge showing where today sits between its all-time low and high with
 a notch at your target, and a history line. Click any row for its full chart,
