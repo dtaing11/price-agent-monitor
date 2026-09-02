@@ -79,6 +79,10 @@ A product tracked at five shops is **one row**, badged with the shop count, and
 priced at the cheapest. Opening it shows a comparison chart with one line per
 shop plus a legend sorted cheapest first.
 
+When one member's price is a fraction of the rest it is almost always a
+different variant rather than a deal, and the panel says so in `--rise` above
+the saving line. Never present that as a bargain.
+
 The chart obeys the same colour rule as everything else. The cheapest shop is
 `--drop` and solid; every other shop is `--ink-3`, told apart by **dash
 pattern**, never by inventing a palette. The legend swatch repeats the line's

@@ -137,6 +137,7 @@ def cmd_add(args) -> int:
     p = Product(
         name=name,
         url=args.url,
+        group=getattr(args, "group", None) or None,
         title=(ex.title if ex else None),
         image=(ex.image if ex else None),
         selector=args.selector,
@@ -276,6 +277,9 @@ def cmd_compare(args) -> int:
         f"\ncheapest right now: {format_price(cheapest.price, cheapest.currency)} "
         f"at {cheapest.retailer}"
     )
+    warning = variant_warning([r.price or 0 for r in priced])
+    if warning:
+        print(f"⚠️  {warning}")
     if args.target:
         print(
             f"you will be told when any of them reaches "
@@ -351,7 +355,33 @@ def cmd_group(args) -> int:
                 f"\ncheapest is {_retailer(best)} — "
                 f"{format_price(spread, best.currency)} less than the dearest"
             )
+        warning = variant_warning([m.last_price or 0 for m in priced])
+        if warning:
+            print(f"\n⚠️  {warning}")
     return 0
+
+
+def variant_warning(prices: list[float]) -> str | None:
+    """Warn when a group's prices are too far apart to be the same thing.
+
+    Shops list variants under one product name - a 50ft kit and a 200ft kit,
+    a refurbished unit, a single bulb versus a pack. When one member is a
+    fraction of the rest, the cheapest is usually a different item rather than
+    a bargain, and quietly alerting on it would be worse than saying nothing.
+    """
+    usable = sorted(p for p in prices if p and p > 0)
+    if len(usable) < 2:
+        return None
+    cheapest = usable[0]
+    others = usable[1:]
+    middle = others[len(others) // 2]
+    if cheapest < middle * 0.5:
+        return (
+            "these prices are too far apart to be the same item — the cheapest "
+            "is probably a different size, pack or condition. Open it before "
+            "trusting it, and pin the right variant's URL if so"
+        )
+    return None
 
 
 def _retailer(product: Product) -> str:
@@ -511,6 +541,8 @@ def cmd_set(args) -> int:
         p.learned_selector = None
     if args.url:
         p.url = args.url
+    if args.group is not None:
+        p.group = args.group.strip() or None
     if args.pause:
         p.active = False
     if args.resume:
@@ -520,6 +552,7 @@ def cmd_set(args) -> int:
         f"updated {p.name}: target={format_price(p.target_price, p.currency)} "
         f"selector={p.selector or p.learned_selector or 'auto'} "
         f"{'active' if p.active else 'paused'}"
+        + (f" group={p.group}" if p.group else "")
     )
     return 0
 
@@ -675,6 +708,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--selector",
         help="pin a CSS selector, e.g. 'span.price' or 'meta[itemprop=price]@content'",
     )
+    a.add_argument(
+        "--group",
+        help="track this alongside other shops selling the same product, "
+        "e.g. --group sony-wh-1000xm5",
+    )
     a.add_argument("--notes", default="")
     a.add_argument(
         "--no-llm", action="store_true", help="deterministic extraction only"
@@ -766,6 +804,9 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--url")
     a.add_argument("--pause", action="store_true")
     a.add_argument("--resume", action="store_true")
+    a.add_argument(
+        "--group", help="move into this group ('' to take it out of its group)"
+    )
     a.set_defaults(func=cmd_set)
 
     a = sub.add_parser(

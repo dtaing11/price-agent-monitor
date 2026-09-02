@@ -241,6 +241,19 @@ cheapest is Walmart — $29.00 less than the dearest
 If several shops cross your target at once you get **one** notification, naming
 the cheapest and how many it beat — not one per shop.
 
+**Missed a shop?** Add it to the group by URL:
+
+```bash
+pricemon add "https://us.govee.com/products/…" --group govee-permanent-outdoor-lights
+pricemon set <name> --group ""      # take one back out
+```
+
+**Watch out for variants.** Shops list a 50ft kit and a 200ft kit under one
+product name, and a group has no way to know they differ. When one member's
+price is a fraction of the rest, both the CLI and the app say so rather than
+presenting it as a bargain — open it and pin the right variant's URL if the
+warning is right.
+
 ---
 
 ## Shops it knows

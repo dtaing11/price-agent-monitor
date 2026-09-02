@@ -107,3 +107,23 @@ class TestImplausibleGuard(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestVariantWarning(unittest.TestCase):
+    """Groups can silently compare a 50ft kit against a 200ft one."""
+
+    def test_warns_when_one_member_is_a_fraction_of_the_rest(self):
+        from pricemon.cli import variant_warning
+
+        self.assertIsNotNone(variant_warning([79.99, 859.99, 1062.59]))
+
+    def test_quiet_for_a_normal_spread(self):
+        from pricemon.cli import variant_warning
+
+        self.assertIsNone(variant_warning([80.99, 84.99, 99.99, 109.99]))
+
+    def test_quiet_without_enough_to_compare(self):
+        from pricemon.cli import variant_warning
+
+        self.assertIsNone(variant_warning([99.0]))
+        self.assertIsNone(variant_warning([]))

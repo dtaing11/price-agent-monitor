@@ -503,6 +503,15 @@ function renderGroup(side, group, members) {
   });
   side.append(legend);
 
+  // Shops list variants under one name. When one member is a fraction of the
+  // rest it is usually a different size or condition, not a deal.
+  const sorted = priced.map((m) => m.last_price).sort((a, b) => a - b);
+  if (sorted.length >= 2 && sorted[0] < sorted[Math.floor((sorted.length - 1) / 2) + 1] * 0.5) {
+    const warn = el("div", { className: "saving", style: "color:var(--rise)" });
+    warn.textContent = "These prices are too far apart to be the same item — the cheapest is probably a different size, pack or condition.";
+    side.append(warn);
+  }
+
   if (best && dearest && dearest.last_price > best.last_price) {
     const saving = dearest.last_price - best.last_price;
     const note = el("div", { className: "saving" });
