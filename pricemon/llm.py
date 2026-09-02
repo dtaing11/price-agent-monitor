@@ -198,11 +198,24 @@ class LLM:
         return "disabled"
 
     # -- backends ---------------------------------------------------------
-    def _ask_cli(self, prompt: str, screenshot: str | None = None) -> str:
+    def _ask_cli_with_tools(self, prompt: str, tools: str) -> str:
+        """Run the CLI with a specific tool allowed, for jobs that need one."""
+        return self._ask_cli(prompt, allowed_tools=tools)
+
+    def _ask_cli(
+        self,
+        prompt: str,
+        screenshot: str | None = None,
+        allowed_tools: str | None = None,
+    ) -> str:
         # Tools stay off by default - this is a read-and-answer task. The one
         # exception is a screenshot: Read is what lets the CLI open the image,
         # so it is allowed only when there is an image to look at.
-        tools = "Read" if screenshot else ""
+        tools = (
+            allowed_tools
+            if allowed_tools is not None
+            else ("Read" if screenshot else "")
+        )
         cmd = [
             "claude",
             "-p",
@@ -234,6 +247,19 @@ class LLM:
                 f"claude CLI error: {str(payload.get('result'))[:300]}"
             )
         return payload.get("result", "")
+
+    def ask_with_web_search(self, prompt: str) -> str:
+        """Answer a question that needs the live web.
+
+        Extraction reads a page we already fetched, so it runs with tools off.
+        Finding *which* page to fetch is the opposite problem, and web search is
+        the tool for it.
+        """
+        if not self.available:
+            raise LLMUnavailable("no LLM backend available")
+        if self.backend == "claude_cli":
+            return self._ask_cli_with_tools(prompt, tools="WebSearch")
+        return self._ask_api(prompt)
 
     def _ask_api(self, prompt: str, screenshot: str | None = None) -> str:
         try:

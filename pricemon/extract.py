@@ -8,9 +8,10 @@ from __future__ import annotations
 
 import json
 import re
+import warnings
 from typing import Any
 
-from bs4 import BeautifulSoup, FeatureNotFound
+from bs4 import BeautifulSoup, FeatureNotFound, XMLParsedAsHTMLWarning
 from soupsieve import SelectorSyntaxError
 
 from . import sites
@@ -132,6 +133,11 @@ def attr_str(el: Any, name: str) -> str | None:
     if isinstance(val, (list, tuple)):
         return " ".join(str(v) for v in val)
     return str(val)
+
+
+# Some shops serve XML sitemaps or feeds from a product URL. Parsing those as
+# HTML is fine for our purposes, and the warning is just noise in a check run.
+warnings.filterwarnings("ignore", category=XMLParsedAsHTMLWarning)
 
 
 def _soup(html: str) -> BeautifulSoup:

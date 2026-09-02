@@ -6,3 +6,14 @@ PyYAML>=6.0
 # Optional. Gives `pricemon app` a real native window instead of a
 # browser tab. On macOS it pulls in pyobjc; on Linux, GTK/Qt bindings.
 # pywebview>=5.0
+
+# The search layer. Quota is tracked and spent deliberately, so a 429 is an
+# accounting bug rather than something to retry through.
+httpx>=0.27
+pydantic>=2.6
+aiolimiter>=1.1
+cachetools>=5.3
+tenacity>=8.2
+# Optional: share the quota ledger and cache across workers and restarts.
+# Without it the layer degrades to in-process limits and keeps serving.
+# redis>=5.0

@@ -198,6 +198,34 @@ the normal extraction cascade, and asks Claude which results are actually that
 product rather than a case, cable, older model or multi-pack. Results show the
 retailer, live price and stock, so you pick with the numbers in front of you.
 
+### Search that does not get rate-limited
+
+Web search is the fragile part of any shopping agent, so it lives behind its
+own layer (`pricemon/searchlayer/`, [documented here](pricemon/searchlayer/README.md))
+built on one rule: **a rate-limit error never reaches the caller**. Quota is a
+budget the agent tracks and spends deliberately, rather than something it
+discovers by getting a 429.
+
+Queries are normalised before caching, so paraphrases of one question share an
+entry; identical concurrent questions collapse into a single call; a ledger
+counts calls before they go out and refuses rather than overspending; providers
+are chosen by remaining budget; and two rate limits open a circuit. When
+everything is genuinely spent you get stale results or a clear error carrying
+the earliest reset.
+
+Configure any of Brave, Tavily, Exa, Google Programmable Search or a
+self-hosted SearXNG with an environment variable:
+
+```bash
+export BRAVE_SEARCH_API_KEY=...     # or TAVILY_API_KEY, EXA_API_KEY, ...
+pricemon config                     # shows which providers are ready
+```
+
+DuckDuckGo works with no key and is used as a **last resort only** — it has no
+public API, so there is no quota to reserve and its throttle cannot be retried
+away. With no key configured the agent still runs, just on the one source that
+will throttle under load, and it says so.
+
 **Vague is fine too.** "thunderbolt dock" names a category, not a product, and
 searching it verbatim returns listicles and category pages. So the agent works
 out what you actually mean before searching:

@@ -598,6 +598,20 @@ def cmd_config(args) -> int:
         f"desktop={cfg['notify']['desktop']} webhook={bool(cfg['notify']['webhook_url'])} "
         f"email={bool(cfg['notify']['email'])}"
     )
+
+    from .searchlayer import provider_status
+
+    statuses = provider_status(cfg.get("search"))
+    ready = [name for name, ok, _ in statuses if ok]
+    print("search  : " + (", ".join(ready) if ready else "no provider configured"))
+    for name, ok, note in statuses:
+        if not ok:
+            print(f"{DIM}          {name:11} {note}{RESET}")
+    if ready == ["ddg"]:
+        print(
+            f"{DIM}          DuckDuckGo has no API and no quota to reserve, so it "
+            f"throttles under load — a key for any of the above fixes that.{RESET}"
+        )
     return 0
 
 

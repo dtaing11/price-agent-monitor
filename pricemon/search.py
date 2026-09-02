@@ -11,12 +11,13 @@ returns real retailer links rather than a JS shell.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import logging
 import re
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from urllib.parse import parse_qs, quote_plus, unquote, urlparse
+from urllib.parse import parse_qs, quote_plus, unquote, urljoin, urlparse
 
 import requests
 
@@ -180,62 +181,6 @@ def normalize_query(text: str, max_words: int = 8) -> str:
     return out.strip(" -–—|,;:\"'") or text
 
 
-# Generic nouns that describe a *kind* of thing rather than a product. A query
-# made only of these has no page to find - it needs turning into real models
-# first.
-CATEGORY_WORDS = {
-    "dock",
-    "docking",
-    "station",
-    "hub",
-    "adapter",
-    "cable",
-    "charger",
-    "monitor",
-    "display",
-    "keyboard",
-    "mouse",
-    "chair",
-    "desk",
-    "laptop",
-    "headphones",
-    "earbuds",
-    "speaker",
-    "webcam",
-    "microphone",
-    "ssd",
-    "drive",
-    "router",
-    "printer",
-    "vacuum",
-    "blender",
-    "kettle",
-    "fryer",
-    "camera",
-    "phone",
-    "tablet",
-    "watch",
-    "mattress",
-    "backpack",
-    "shoes",
-    "jacket",
-    "best",
-    "good",
-    "cheap",
-    "top",
-    "budget",
-    "quiet",
-    "wireless",
-    "portable",
-    "gaming",
-    "office",
-    "ergonomic",
-    "thunderbolt",
-    "usb",
-    "bluetooth",
-    "4k",
-}
-
 PLANNER_PROMPT = """A shopper wants to track the price of something and typed:
 
   {query}
@@ -259,20 +204,24 @@ Reply with ONLY JSON:
 
 
 def looks_vague(query: str) -> bool:
-    """Is this a category rather than a product?
+    """Might this be a category rather than one product?
 
-    A model number - a token mixing letters and digits - is the giveaway that
-    someone already knows what they want.
+    Deliberately structural, not a list of nouns: any list of product words is
+    a list of things the agent cannot handle, and "outdoor strip light" is
+    exactly what falls off the end of one. A model number - a token mixing
+    letters and digits - means the shopper already knows what they want.
+    Anything short without one might be a category, and the planner decides.
+
+    This is only a first guess, and a cheap one. When it is wrong the search
+    itself corrects it: a query that finds no product pages gets planned
+    anyway.
     """
-    words = [w for w in re.split(r"[^A-Za-z0-9-]+", query.lower()) if w]
+    words = [w for w in re.split(r"[^A-Za-z0-9-]+", query.strip().lower()) if w]
     if not words:
         return True
     if any(MODEL_TOKEN.match(w) and any(c.isdigit() for c in w) for w in words):
         return False
-    if len(words) > 6:
-        return False
-    generic = sum(1 for w in words if w in CATEGORY_WORDS)
-    return generic >= max(1, len(words) // 2)
+    return len(words) <= 5
 
 
 def plan_products(query: str, llm, limit: int = 4) -> tuple[list[str], str]:
@@ -339,88 +288,30 @@ def _looks_like_product(url: str) -> bool:
 
 logger = logging.getLogger(__name__)
 
-# Three engines, tried in order. One of them rate-limiting should not take the
-# whole feature down with it, and none of them is hit hard: results are found
-# on the first engine almost every time.
-ENGINES: tuple[tuple[str, str], ...] = (
-    ("duckduckgo", "https://html.duckduckgo.com/html/?q={q}"),
-    ("mojeek", "https://www.mojeek.com/search?q={q}"),
-    ("bing", "https://www.bing.com/search?q={q}"),
-)
 
-# Where to look when the open web only offers category pages, blog posts and
-# reviews - which is what a query like "ikea billy bookcase" returns.
+# When a query finds only category pages and listicles, narrowing to the big
+# retailers is what turns it into product pages.
 FALLBACK_SITES = "site:amazon.com OR site:walmart.com OR site:ebay.com"
 
 
 class SearchBlocked(RuntimeError):
-    """Every engine refused to answer - usually a rate limit."""
+    """Every search provider is out of budget or unreachable."""
 
 
-def _parse_results(engine: str, html: str) -> list[tuple[str, str]]:
-    from bs4 import BeautifulSoup
+def _source_engines(
+    query: str, cfg: dict, domains: list[str], limit: int
+) -> tuple[list[tuple[str, str]], bool]:
+    """Web search, through the rate-limit-proof layer.
 
-    soup = BeautifulSoup(html, "html.parser")
-    out: list[tuple[str, str]] = []
-
-    if engine == "duckduckgo":
-        anchors = soup.select("a.result__a")
-    elif engine == "mojeek":
-        anchors = soup.select("a.title, ul.results-standard li h2 a")
-    else:
-        anchors = soup.select("li.b_algo h2 a")
-
-    for anchor in anchors:
-        href = _decode(attr_str(anchor, "href") or "")
-        if href.startswith("http"):
-            out.append((href, anchor.get_text(" ", strip=True)[:160]))
-    return out
-
-
-def _ask_engine(
-    engine: str, url_template: str, terms: str, cfg: dict
-) -> list[tuple[str, str]]:
-    """Query one engine. Returns [] when it declines to answer."""
-    _throttle(url_template, float(cfg.get("min_delay_per_domain", 3.0)))
-    try:
-        resp = requests.get(
-            url_template.format(q=quote_plus(terms)),
-            headers={
-                "User-Agent": cfg["user_agent"],
-                "Accept": "text/html,application/xhtml+xml",
-                "Accept-Language": "en-US,en;q=0.9",
-            },
-            timeout=cfg.get("timeout", 25),
-        )
-    except requests.RequestException:
-        return []
-    # DuckDuckGo answers a rate limit with 202 and an "anomaly" page rather
-    # than an error status, so status alone is not enough to go on.
-    if resp.status_code != 200 or "anomaly" in resp.text[:4000].lower():
-        return []
-    return _parse_results(engine, resp.text)
-
-
-def find_urls(
-    query: str, cfg: dict, retailers: list[str] | None = None, limit: int = 12
-) -> list[tuple[str, str]]:
-    """Search for candidate product pages. Returns [(url, title)].
-
-    Stops at the first engine and phrasing that yields real product pages, so
-    the common case is a single request.
+    Everything about quota - counting calls before they go out, choosing the
+    provider with the most budget left, backing off, caching, coalescing
+    duplicate questions - lives in `pricemon.searchlayer`. This function only
+    turns a product query into search terms and keeps the results that look
+    like something you can buy.
     """
-    domains: list[str] = []
-    if retailers:
-        for name in retailers:
-            rule = next(
-                (r for r in sites.RULES if r.name.lower().startswith(name.lower())),
-                None,
-            )
-            domains.extend(rule.domains[:1] if rule else [name])
+    from .searchlayer import AllProvidersExhausted
+    from .searchlayer import SearchResult as LayerResult
 
-    # A pasted product title is a marketing sentence; search it verbatim and you
-    # get the brand's home page. Try the trimmed form first, then progressively
-    # broader ones.
     trimmed = normalize_query(query)
     short = " ".join(trimmed.split()[:3])
     phrasings = [trimmed]
@@ -433,42 +324,203 @@ def find_urls(
         sites_filter = " " + " OR ".join(f"site:{d}" for d in domains)
         variants = [f"{p}{sites_filter}" for p in phrasings]
     else:
-        variants = [
-            *phrasings,
-            f"{trimmed} buy price",
-            f"{trimmed} {FALLBACK_SITES}",
-        ]
+        variants = [*phrasings, f"{trimmed} buy price", f"{trimmed} {FALLBACK_SITES}"]
 
-    answered = False
+    router = _router()
     found: list[tuple[str, str]] = []
     seen: set[str] = set()
-    # Enough shops to choose from, without working the engines harder than
-    # needed - one phrasing usually supplies these on its own.
+    answered = False
     enough = min(limit, 4)
 
     for terms in variants:
-        for engine, template in ENGINES:
-            raw = _ask_engine(engine, template, terms, cfg)
-            if not raw:
+        try:
+            hits: list[LayerResult] = _run_async(router.search(terms, count=limit * 2))
+        except AllProvidersExhausted as exc:
+            logger.info("search providers exhausted for %r: %s", terms, exc)
+            break
+        except Exception as exc:  # noqa: BLE001 - a bad query must not kill a check
+            logger.info("search failed for %r: %s", terms, exc)
+            continue
+
+        answered = True
+        for hit in hits:
+            if not _looks_like_product(hit.url):
                 continue
-            answered = True
-            for url, title in _keep_products(raw, limit):
-                if url not in seen:
-                    seen.add(url)
-                    found.append((url, title))
-            if len(found) >= enough:
-                return found[:limit]
+            canonical = sites.canonical_url(hit.url)
+            if canonical not in seen:
+                seen.add(canonical)
+                found.append((canonical, hit.title))
         if len(found) >= enough:
             break
+    return found[:limit], answered
 
-    if found:
-        return found[:limit]
-    if not answered:
+
+_ROUTER = None
+
+
+def _router():
+    """One router per process, so its cache and ledger are shared."""
+    global _ROUTER
+    if _ROUTER is None:
+        from .searchlayer import build_router
+
+        _ROUTER = build_router()
+    return _ROUTER
+
+
+def _run_async(coro):
+    """Bridge to the async layer from this synchronous codebase."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+    # Already inside a loop (the app's worker threads): give it its own.
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(asyncio.run, coro).result()
+
+
+WEB_SEARCH_PROMPT = """Find product pages where "{query}" can be bought right now.
+
+Use web search. Return direct product pages at shops - Amazon /dp/, Walmart
+/ip/, Best Buy, Target, Home Depot, the brand's own store, wherever it is
+actually sold. Not category pages, not reviews, not listicles, not "best of"
+articles.
+
+Prefer the exact product asked for. Reply with ONLY JSON:
+{{"urls": ["https://...", ...]}}"""
+
+# Shops whose own search page answers a plain HTTP request with real product
+# links. Most large retailers either block this outright or render results in
+# JavaScript, so this list is short by measurement, not by choice.
+RETAILER_SEARCH = ("https://www.newegg.com/p/pl?d={q}",)
+
+
+def _source_claude_web(query: str, llm, limit: int) -> list[tuple[str, str]]:
+    """Claude, with web search, reading results the way a person would.
+
+    This is what rescues a query the free engines cannot serve - either
+    because they are rate-limiting, or because they answer a product name with
+    the brand's home page, which is not something you can buy. It runs through
+    the same login as the rest of the agent.
+    """
+    if llm is None or not getattr(llm, "available", False):
+        return []
+    try:
+        raw = llm.ask_with_web_search(WEB_SEARCH_PROMPT.format(query=query))
+    except Exception as exc:  # noqa: BLE001 - one source failing is not fatal
+        logger.info("web search via Claude failed for %r: %s", query, exc)
+        return []
+
+    from .llm import _extract_json
+
+    data = _extract_json(raw) or {}
+    out: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for url in data.get("urls") or []:
+        if not isinstance(url, str) or not url.startswith("http"):
+            continue
+        if not _looks_like_product(url):
+            continue
+        canonical = sites.canonical_url(url)
+        if canonical not in seen:
+            seen.add(canonical)
+            out.append((canonical, ""))
+    return out[:limit]
+
+
+def _source_retailer_search(query: str, cfg: dict, limit: int) -> list[tuple[str, str]]:
+    """Ask shops' own search pages, which only ever return product links."""
+    from bs4 import BeautifulSoup
+
+    found: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for template in RETAILER_SEARCH:
+        url = template.format(q=quote_plus(normalize_query(query)))
+        _throttle(url, float(cfg.get("min_delay_per_domain", 3.0)))
+        try:
+            resp = requests.get(
+                url,
+                headers={
+                    "User-Agent": cfg["user_agent"],
+                    "Accept": "text/html,application/xhtml+xml",
+                    "Accept-Language": "en-US,en;q=0.9",
+                },
+                timeout=cfg.get("timeout", 25),
+            )
+        except requests.RequestException:
+            continue
+        if resp.status_code != 200:
+            continue
+        soup = BeautifulSoup(resp.text, "html.parser")
+        for tag in soup.find_all("a", href=True):
+            href = urljoin(resp.url, attr_str(tag, "href") or "")
+            if not _looks_like_product(href):
+                continue
+            canonical = sites.canonical_url(href)
+            if canonical in seen:
+                continue
+            seen.add(canonical)
+            found.append((canonical, tag.get_text(" ", strip=True)[:160]))
+            if len(found) >= limit:
+                return found
+    return found
+
+
+def find_urls(
+    query: str,
+    cfg: dict,
+    retailers: list[str] | None = None,
+    limit: int = 12,
+    llm=None,
+    budget: dict | None = None,
+) -> list[tuple[str, str]]:
+    """Find product pages for a query, from whichever source can.
+
+    Sources are tried cheapest first and stop as soon as there is enough to
+    work with, so the ordinary case still costs one HTTP request:
+
+      1. search engines        free and fast, but they rate-limit, and they
+                               answer a product name with a brand home page
+      2. Claude + web search   slower, uses your login, and reads results the
+                               way a person would
+      3. a shop's own search   only ever returns product pages, for the shops
+                               that answer a plain request
+
+    `budget` caps how often the slow source may run within one search, so
+    planning four products cannot turn into four web searches.
+    """
+    domains: list[str] = []
+    if retailers:
+        for name in retailers:
+            rule = next(
+                (r for r in sites.RULES if r.name.lower().startswith(name.lower())),
+                None,
+            )
+            domains.extend(rule.domains[:1] if rule else [name])
+
+    found, answered = _source_engines(query, cfg, domains, limit)
+    if len(found) >= min(limit, 2):
+        return found
+
+    if budget is None or budget.get("claude", 0) > 0:
+        if budget is not None:
+            budget["claude"] = budget.get("claude", 0) - 1
+        already = {u for u, _ in found}
+        found += [
+            (u, t) for u, t in _source_claude_web(query, llm, limit) if u not in already
+        ]
+        if len(found) >= min(limit, 2):
+            return found[:limit]
+
+    if not found:
+        found = _source_retailer_search(query, cfg, limit)
+
+    if not found and not answered and llm is None:
         raise SearchBlocked(
             "every search engine declined to answer (usually a rate limit). "
             "Wait a minute, or paste the product link instead."
         )
-    return []
+    return found[:limit]
 
 
 def _keep_products(raw: list[tuple[str, str]], limit: int) -> list[tuple[str, str]]:
@@ -493,27 +545,64 @@ def _search_each(
     retailers: list[str] | None,
     limit: int,
     price_them: bool,
+    llm=None,
+    budget: dict | None = None,
 ) -> list[SearchResult]:
-    """Search several specific products and pool what comes back."""
-    found: list[SearchResult] = []
+    """Find and price pages for several specific products.
+
+    Two things keep this quick. The per-product engine searches run at the same
+    time rather than one after another. And if they come up short, the slow
+    source is asked *once* about all the products together - asking it per
+    product turned a search into minutes.
+    """
     per_product = max(1, limit // max(len(products), 1)) + 1
 
-    for product in products:
-        urls = find_urls(product, cfg["fetch"], retailers=retailers, limit=per_product)
-        if not urls:
-            continue  # suggested model does not exist, or nobody sells it
-        if not price_them:
-            found.extend(
-                SearchResult(title=t, url=u, retailer=_retailer_of(u), matched=product)
-                for u, t in urls[:per_product]
+    def engines_for(product: str) -> tuple[str, list[tuple[str, str]]]:
+        found, _answered = _source_engines(product, cfg["fetch"], [], per_product)
+        return product, found
+
+    pairs: list[tuple[str, str]] = []  # (url, product it was found for)
+    titles: dict[str, str] = {}
+    with ThreadPoolExecutor(max_workers=min(6, max(len(products), 1))) as pool:
+        for product, urls in pool.map(engines_for, products):
+            for url, title in urls:
+                pairs.append((url, product))
+                titles[url] = title
+
+    thin = len(pairs) < min(limit, 2)
+    if thin and llm is not None and (budget is None or budget.get("claude", 0) > 0):
+        if budget is not None:
+            budget["claude"] = budget.get("claude", 0) - 1
+        # One question covering every product, not one per product.
+        joined = ", ".join(f'"{p}"' for p in products)
+        known = {u for u, _ in pairs}
+        for url, _title in _source_claude_web(joined, llm, limit * 2):
+            if url not in known:
+                pairs.append((url, _closest_product(url, products)))
+
+    if not price_them:
+        return [
+            SearchResult(
+                title=titles.get(url) or product,
+                url=url,
+                retailer=_retailer_of(url),
+                matched=product,
             )
-            continue
-        with ThreadPoolExecutor(max_workers=4) as pool:
-            for result in pool.map(
-                lambda c: _price_one(c[0], c[1], cfg["fetch"]), urls[:per_product]
-            ):
-                result.matched = product
-                found.append(result)
+            for url, product in pairs[:limit]
+        ]
+
+    found: list[SearchResult] = []
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        for result, (_url, product) in zip(
+            pool.map(
+                lambda pair: _price_one(pair[0], titles.get(pair[0], ""), cfg["fetch"]),
+                pairs[: limit * 2],
+            ),
+            pairs[: limit * 2],
+            strict=False,
+        ):
+            result.matched = product
+            found.append(result)
 
     # One shop per product is enough to compare on; keep the cheapest of each.
     best_per_product: dict[str, SearchResult] = {}
@@ -532,6 +621,18 @@ def _search_each(
     ordered += [r for r in extras if r.price is not None]
     ordered += [r for r in extras if r.price is None]
     return ordered[:limit]
+
+
+def _closest_product(url: str, products: list[str]) -> str:
+    """Which of the planned products does this URL look like it belongs to?"""
+    slug = re.sub(r"[^a-z0-9]+", " ", url.lower())
+    best, best_hits = products[0] if products else "", 0
+    for product in products:
+        words = [w for w in re.split(r"[^a-z0-9]+", product.lower()) if len(w) > 2]
+        hits = sum(1 for w in words if w in slug)
+        if hits > best_hits:
+            best, best_hits = product, hits
+    return best
 
 
 def _retailer_of(url: str) -> str:
@@ -578,14 +679,42 @@ def search(
     would consider. Each of those is then searched and priced for real, so a
     suggestion that is wrong or discontinued simply finds nothing.
     """
+    # The slow source is worth a few runs per search, not one per planned
+    # product - four models must not become four web searches.
+    budget = {"claude": 3}
+    planned = False
     if llm is not None and looks_vague(query):
+        products, reading = plan_products(query, llm)
+        if products:
+            planned = True
+            if on_plan:
+                on_plan(products, reading)
+            found = _search_each(
+                products, cfg, retailers, limit, price_them, llm=llm, budget=budget
+            )
+            if found:
+                return found
+
+    candidates = find_urls(
+        query,
+        cfg["fetch"],
+        retailers=retailers,
+        limit=limit * 2,
+        llm=llm,
+        budget=budget,
+    )
+
+    # The guess above is only a guess. What settles it is whether the search
+    # actually found anything to buy - if it did not, the words were a
+    # category after all, whatever they looked like.
+    if not candidates and llm is not None and not planned:
         products, reading = plan_products(query, llm)
         if products:
             if on_plan:
                 on_plan(products, reading)
-            return _search_each(products, cfg, retailers, limit, price_them)
-
-    candidates = find_urls(query, cfg["fetch"], retailers=retailers, limit=limit * 2)
+            return _search_each(
+                products, cfg, retailers, limit, price_them, llm=llm, budget=budget
+            )
     if not candidates:
         return []
     candidates = candidates[: max(limit, 1)]
