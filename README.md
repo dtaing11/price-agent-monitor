@@ -106,10 +106,30 @@ pricemon app          # opens the tracker in its own window
 pricemon serve        # the UI only, in your browser
 ```
 
-`pricemon app` opens a real window: a native one if you have `pywebview`,
-otherwise a Chromium `--app` window with no tabs and no address bar, with its
-own taskbar entry. `pricemon install-desktop` puts it in your applications
-menu so it starts like any other program.
+**To get it in your applications, run `pricemon install-desktop` once.** It
+installs to the right place for your OS:
+
+| | Where it lands | How to open it |
+|---|---|---|
+| macOS | `~/Applications/Price Monitor.app` | Launchpad, or ⌘-space → "Price Monitor" |
+| Linux | `~/.local/share/applications/pricemon.desktop` | your applications menu |
+| Windows | Start Menu → Price Monitor | Start menu, or pin it |
+
+On macOS it builds a real `.app` bundle with its own icon and registers it with
+Launch Services, so Spotlight and Launchpad find it immediately — a `.desktop`
+file, which is what Linux uses, is ignored by macOS entirely.
+
+**For a true native window** rather than a browser tab, install pywebview:
+
+```bash
+python3 -m pip install pywebview
+```
+
+Without it, `pricemon app` looks for Chrome, Edge, Brave or Chromium and opens
+a chromeless `--app` window; failing that it falls back to a normal tab in your
+default browser. (One cosmetic wrinkle on macOS: the Dock and menu bar may
+still read "Python" even though the window is titled Price Monitor — that is
+how framework Python builds identify themselves.)
 
 Inside it you get every tracked product in one ledger: price, how far it has
 moved, a gauge showing where today sits between its all-time low and high with

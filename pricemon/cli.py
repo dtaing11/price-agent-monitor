@@ -580,8 +580,12 @@ def cmd_install_desktop(args) -> int:
     from . import desktop
 
     path = desktop.install_launcher()
-    print(f"installed application launcher: {path}")
-    print("it should now appear in your applications menu as 'Price Monitor'")
+    print(f"installed: {path}")
+    if sys.platform == "darwin":
+        print('open it from Launchpad or Spotlight (⌘-space, "Price Monitor"),')
+        print("or drag it to your Dock to keep it there")
+    else:
+        print("it should now appear in your applications menu as 'Price Monitor'")
     return 0
 
 
@@ -786,7 +790,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     a = sub.add_parser(
         "install-desktop",
-        help="add Price Monitor to your applications menu (Linux / Windows)",
+        help="add Price Monitor to your applications (macOS / Linux / Windows)",
     )
     a.set_defaults(func=cmd_install_desktop)
 

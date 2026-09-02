@@ -2,3 +2,7 @@ requests>=2.31
 beautifulsoup4>=4.12
 lxml>=5.0
 PyYAML>=6.0
+
+# Optional. Gives `pricemon app` a real native window instead of a
+# browser tab. On macOS it pulls in pyobjc; on Linux, GTK/Qt bindings.
+# pywebview>=5.0

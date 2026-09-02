@@ -35,6 +35,14 @@ APP_BROWSERS = (
     "msedge.exe",
 )
 
+MACOS_BROWSER_PATHS = (
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+    "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+    "/Applications/Chromium.app/Contents/MacOS/Chromium",
+    "/Applications/Vivaldi.app/Contents/MacOS/Vivaldi",
+)
+
 WINDOWS_BROWSER_PATHS = (
     r"C:\Program Files\Google\Chrome\Application\chrome.exe",
     r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
@@ -47,12 +55,14 @@ WINDOWS_BROWSER_PATHS = (
 def _app_browsers() -> list[str]:
     """Browsers that can open a chromeless window, in preference order.
 
-    On Windows the browsers are rarely on PATH, so their usual install
-    locations are checked too.
+    On Windows and macOS these are rarely on PATH - macOS keeps them inside
+    .app bundles - so their usual install locations are checked too.
     """
     found = [path for name in APP_BROWSERS if (path := shutil.which(name))]
     if sys.platform == "win32":
         found += [p for p in WINDOWS_BROWSER_PATHS if Path(p).exists()]
+    elif sys.platform == "darwin":
+        found += [p for p in MACOS_BROWSER_PATHS if Path(p).exists()]
     return found
 
 
@@ -82,6 +92,7 @@ def launch(port: int = 8787) -> int:
     try:  # 1. native window
         import webview  # type: ignore[import-not-found]
 
+        _name_the_app()
         webview.create_window(
             "Price Monitor", url, width=1240, height=840, min_size=(760, 560)
         )
@@ -124,11 +135,109 @@ def launch(port: int = 8787) -> int:
         return 0
 
 
+def _name_the_app() -> None:
+    """Best effort at showing "Price Monitor" rather than "Python" in the
+    macOS menu bar.
+
+    A window opened from a Python process inherits the interpreter's bundle
+    identity. Rewriting the in-memory bundle dictionary before the window is
+    created is the usual remedy, but python.org framework builds run inside
+    their own Python.app and may keep reporting "Python" regardless. Purely
+    cosmetic either way - the window itself is titled correctly.
+    """
+    if sys.platform != "darwin":
+        return
+    try:
+        from Foundation import NSBundle  # type: ignore[import-untyped]
+
+        bundle = NSBundle.mainBundle()
+        info = bundle.localizedInfoDictionary() or bundle.infoDictionary()
+        if info is not None:
+            info["CFBundleName"] = "Price Monitor"
+            info["CFBundleDisplayName"] = "Price Monitor"
+    except Exception:  # noqa: BLE001 - a wrong name is not worth failing over
+        return
+
+
 def install_launcher() -> Path:
-    """Put Price Monitor in the OS application menu."""
+    """Put Price Monitor wherever this OS expects to find applications."""
     if sys.platform == "win32":
         return _install_windows_shortcut()
+    if sys.platform == "darwin":
+        return _install_macos_app()
     return _install_desktop_entry()
+
+
+MACOS_PLIST = """<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleName</key><string>Price Monitor</string>
+  <key>CFBundleDisplayName</key><string>Price Monitor</string>
+  <key>CFBundleIdentifier</key><string>net.pricemon.app</string>
+  <key>CFBundleVersion</key><string>{version}</string>
+  <key>CFBundleShortVersionString</key><string>{version}</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleExecutable</key><string>PriceMonitor</string>
+  <key>CFBundleIconFile</key><string>pricemon.icns</string>
+  <key>NSHighResolutionCapable</key><true/>
+  <key>LSMinimumSystemVersion</key><string>10.13</string>
+</dict>
+</plist>
+"""
+
+
+def _install_macos_app() -> Path:
+    """Build a real .app bundle in ~/Applications.
+
+    macOS ignores .desktop files entirely, so the Linux launcher does nothing
+    here. A bundle is just a directory with the right shape: an Info.plist, an
+    executable, and an icon. Written to ~/Applications rather than
+    /Applications so no admin password is needed; Spotlight and Launchpad index
+    both.
+    """
+    from . import __version__
+
+    apps = Path.home() / "Applications"
+    bundle = apps / "Price Monitor.app"
+    macos_dir = bundle / "Contents" / "MacOS"
+    resources = bundle / "Contents" / "Resources"
+    macos_dir.mkdir(parents=True, exist_ok=True)
+    resources.mkdir(parents=True, exist_ok=True)
+
+    (bundle / "Contents" / "Info.plist").write_text(
+        MACOS_PLIST.format(version=__version__)
+    )
+
+    icon = Path(__file__).parent / "assets" / "pricemon.icns"
+    if icon.exists():
+        shutil.copyfile(icon, resources / "pricemon.icns")
+
+    launcher = macos_dir / "PriceMonitor"
+    launcher.write_text(
+        "#!/bin/bash\n"
+        "# Written by `pricemon install-desktop`. Runs the tracker and opens\n"
+        "# its window; quitting the window leaves the server running until you\n"
+        "# quit the app.\n"
+        f'cd "{Path(__file__).resolve().parent.parent}" || exit 1\n'
+        f'exec "{sys.executable}" -m pricemon app\n'
+    )
+    launcher.chmod(0o755)
+
+    # Nudge Finder, and register with Launch Services so Spotlight and
+    # Launchpad index the bundle straight away rather than whenever they next
+    # happen to rescan ~/Applications.
+    subprocess.run(["touch", str(bundle)], capture_output=True, check=False)
+    lsregister = Path(
+        "/System/Library/Frameworks/CoreServices.framework/Frameworks"
+        "/LaunchServices.framework/Support/lsregister"
+    )
+    if lsregister.exists():
+        subprocess.run(
+            [str(lsregister), "-f", str(bundle)], capture_output=True, check=False
+        )
+    return bundle
 
 
 def _install_windows_shortcut() -> Path:
