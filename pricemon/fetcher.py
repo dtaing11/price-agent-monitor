@@ -1,7 +1,9 @@
-"""Polite HTTP fetching: per-host throttling, robots.txt, retries, browser headers.
+"""HTTP fetching: per-host throttling, retries, browser headers, robots.txt.
 
-Being well behaved is not just etiquette - hammering a shop is the fastest way
-to earn a 403 and lose your price history.
+Restraint here is self-interest as much as etiquette - hammering a shop is the
+fastest way to earn a 403 and lose your price history. The throttle and retry
+budget are always on; the robots.txt check is opt-in via
+``fetch.respect_robots`` and off by default.
 """
 
 from __future__ import annotations
@@ -184,9 +186,9 @@ def fetch(
     ua = cfg["user_agent"]
     timeout = cfg["timeout"]
 
-    if cfg.get("respect_robots", True) and not _robots_allows(url, ua, timeout):
+    if cfg.get("respect_robots", False) and not _robots_allows(url, ua, timeout):
         raise RobotsDenied(
-            f"robots.txt disallows {url} (set fetch.respect_robots: false to override)"
+            f"robots.txt disallows {url} (set fetch.respect_robots: false to ignore it)"
         )
 
     sess = session or requests.Session()

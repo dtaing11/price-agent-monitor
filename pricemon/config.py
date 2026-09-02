@@ -18,7 +18,10 @@ DEFAULTS: dict[str, Any] = {
         "timeout": 25,
         "max_retries": 3,
         "min_delay_per_domain": 3.0,  # seconds between hits on the same host
-        "respect_robots": True,
+        # Off by default: this is a personal watchlist checked a couple of
+        # times a day, not a crawler. Politeness is enforced by the throttle
+        # and retry budget above instead. Set true to honour robots.txt.
+        "respect_robots": False,
         # auto: render with a headless browser only for sites that need it
         # (Amazon, Target, ...) or when plain HTTP finds no price.
         # never | auto | always. Needs playwright installed.

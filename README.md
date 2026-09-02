@@ -245,17 +245,21 @@ not be nagged twice a day forever.
 
 ---
 
-## Being a good scraper
+## Load and etiquette
 
 - One request per page per run, with a real browser User-Agent.
-- **`robots.txt` is respected** by default. If a site disallows the path, the
-  check fails loudly rather than sneaking around it. Override deliberately with
-  `fetch.respect_robots: false`.
-- Per-domain throttling (`min_delay_per_domain`, 3s default) with jitter.
+- Per-domain throttling (`min_delay_per_domain`, 3s default) with jitter, so
+  several products on the same shop never fire at once.
 - Retries with exponential backoff, honouring `Retry-After` on 429s.
+- **`robots.txt` is not consulted by default.** This is a personal watchlist
+  checked a couple of times a day, not a crawler. Set
+  `fetch.respect_robots: true` to honour it, and checks on disallowed paths
+  will then fail with a clear message instead of fetching.
 
-Twice a day is a polite cadence. Don't point this at a site whose terms forbid
-it, and don't crank the interval down to seconds.
+The throttle is the part that matters: it is what keeps you under the radar and
+keeps your price history intact. Retailers' terms of use still apply to you
+regardless of what the tool does, and twice a day is a cadence that stays well
+inside normal browsing volume — don't crank the interval down to seconds.
 
 ---
 
@@ -276,7 +280,7 @@ Big marketplaces (Amazon, Walmart, Best Buy) actively fight scrapers and their
 terms usually forbid it; many have affiliate or product APIs that are the
 supported path.
 
-**`robots.txt disallows`** — working as intended. Decide consciously.
+**`robots.txt disallows`** — only appears if you set `fetch.respect_robots: true`. Set it back to `false` to fetch anyway.
 
 **Cron ran but nothing happened** — check `~/.price-monitor/cron.log`, and
 confirm the entries exist with `crontab -l`. If desktop pop-ups don't appear
