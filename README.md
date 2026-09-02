@@ -22,7 +22,7 @@ instant and free. When a site redesigns, confidence drops and it learns again.
 
 ---
 
-## Install (Linux)
+## Install (Linux / macOS)
 
 ```bash
 cd ~/price-monitor-agent           # wherever you put this
@@ -68,6 +68,34 @@ Alerts land in `~/.price-monitor/cron.log` plus whatever channels you enabled.
 Prefer systemd? A timer calling
 `ExecStart=/home/you/price-monitor-agent/bin/pricemon check --quiet` works
 identically — cron is just the default because it needs no root.
+
+## Install (Windows)
+
+```powershell
+cd $HOME\price-monitor-agent
+python -m pip install -r requirements.txt
+
+python -m pricemon config            # where data lives, how the AI is wired
+python -m pricemon install-desktop   # Start Menu shortcut
+```
+
+Add the `bin\` folder to your PATH and `pricemon ...` works from any prompt,
+same as on Linux. Optional extras:
+
+```powershell
+python -m pip install playwright ; python -m playwright install chromium
+```
+
+Windows differences, all handled for you:
+
+- **Scheduling uses Task Scheduler, not cron.** `pricemon install-cron` creates
+  two daily tasks (`PriceMonitor 0800`, `PriceMonitor 2000`) that run a
+  generated `run-check.cmd` in `%USERPROFILE%\.price-monitor\`. Check them with
+  `schtasks /Query /TN "PriceMonitor 0800"`, or run that .cmd by hand to test.
+- **Alerts are Windows toast notifications** through PowerShell — no extra
+  install. Phone alerts (below) work identically everywhere.
+- Scheduled runs use `pythonw.exe` when it is available, so no console window
+  pops up twice a day.
 
 ---
 
@@ -229,7 +257,13 @@ alerts:
 
 notify:
   console: true
-  desktop: true            # notify-send on Linux, osascript on macOS
+  desktop: true            # notify-send · osascript · Windows toast
+  ntfy:                    # push to your phone — free, no account
+    topic: pick-something-unguessable
+    server: https://ntfy.sh
+  telegram:                # or Telegram, if you prefer
+    bot_token: null
+    chat_id: null
   webhook_url: null        # a Slack or Discord webhook works as-is
   email:                   # optional
     host: smtp.gmail.com
@@ -238,6 +272,24 @@ notify:
     password: app-password
     to: you@gmail.com
 ```
+
+### Getting alerts on your phone
+
+The scheduled check runs at 08:00 and 20:00 whether or not you are at the
+machine, so a desktop toast is easy to miss — and a good price can be gone by
+the evening. Two ways to reach your pocket:
+
+**ntfy** (fastest to set up, free, no account): install the ntfy app, subscribe
+to a topic name, and put that same name in `notify.ntfy.topic`. Anyone who
+knows a topic can post to it, so pick something unguessable. Target hits arrive
+at priority 5, which cuts through Do Not Disturb; routine moves stay quiet.
+
+**Telegram**: create a bot with `@BotFather`, message it once, then read your
+chat id from `https://api.telegram.org/bot<token>/getUpdates`, and fill in
+`notify.telegram`.
+
+Either way the notification carries the product link, so an alert is one tap
+from the page. Test both with `pricemon test-notify`.
 
 Alerts fire on **transitions**, not on every run — a product sitting below its
 target stays quiet until it drops further or crosses the line again. You will
@@ -303,7 +355,8 @@ pricemon/
   money.py      price-string parsing ($1,234.56 / 1.234,56 € / ₹1,49,900)
   storage.py    SQLite: products, observations, alerts
   notify.py     console / desktop / webhook / email
-  cron.py       crontab block management
+  cron.py       crontab block management (Linux/macOS)
+  schedule.py   one scheduling command for cron and Windows Task Scheduler
   webapp.py     local JSON API behind the desktop app
   desktop.py    window launcher and .desktop entry
   static/       the UI (no framework, no CDN, works offline)

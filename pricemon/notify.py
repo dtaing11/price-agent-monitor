@@ -1,6 +1,7 @@
 """Getting the alert in front of you.
 
-Channels: terminal, desktop (notify-send on Linux, osascript on macOS), phone
+Channels: terminal, desktop (notify-send on Linux, osascript on macOS,
+toast notifications on Windows), phone
 (ntfy or Telegram), webhook (Slack/Discord), email.
 
 A scheduled check runs at 08:00 and 20:00 whether or not you are at the
@@ -13,6 +14,7 @@ No channel is allowed to raise - a failed notification must never lose a run.
 from __future__ import annotations
 
 import html
+import os
 import shutil
 import smtplib
 import subprocess
@@ -74,12 +76,54 @@ def _console(alerts: list[Alert]) -> None:
             print(f"{icon} {a.message}{link}")
 
 
+# Windows 10/11 toast. The text is passed through environment variables rather
+# than interpolated into the script, so a product title containing a quote
+# cannot break - or inject into - the command.
+_WIN_TOAST_PS = """
+[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType=WindowsRuntime] > $null
+[Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom, ContentType=WindowsRuntime] > $null
+$template = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent(
+    [Windows.UI.Notifications.ToastTemplateType]::ToastText02)
+$nodes = $template.GetElementsByTagName('text')
+$nodes.Item(0).AppendChild($template.CreateTextNode($env:PRICEMON_TOAST_TITLE)) > $null
+$nodes.Item(1).AppendChild($template.CreateTextNode($env:PRICEMON_TOAST_BODY)) > $null
+$toast = [Windows.UI.Notifications.ToastNotification]::new($template)
+[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('Price Monitor').Show($toast)
+"""
+
+
+def _desktop_windows(title: str, body: str) -> None:
+    """A toast on Windows 10/11, via whichever PowerShell is installed.
+
+    Windows PowerShell 5.1 is tried first: it reaches the WinRT notification
+    types directly, which PowerShell 7 does not do without extra assemblies.
+    """
+    env = {**os.environ, "PRICEMON_TOAST_TITLE": title, "PRICEMON_TOAST_BODY": body}
+    for shell in ("powershell.exe", "powershell", "pwsh"):
+        if not shutil.which(shell):
+            continue
+        proc = subprocess.run(
+            [shell, "-NoProfile", "-NonInteractive", "-Command", _WIN_TOAST_PS],
+            capture_output=True,
+            text=True,
+            env=env,
+            check=False,
+        )
+        if proc.returncode == 0:
+            return
+    # No usable PowerShell: the console, phone and webhook channels still ran.
+
+
 def _desktop(alerts: list[Alert]) -> None:
-    """notify-send on Linux, osascript on macOS.  Silently skipped elsewhere."""
+    """notify-send on Linux, osascript on macOS, a toast on Windows."""
     if not alerts:
         return
     title = "Price Monitor"
     body = "\n".join(f"{ICONS.get(a.kind, '•')} {a.message}" for a in alerts[:5])
+
+    if sys.platform == "win32":
+        _desktop_windows(title, body.replace("\n", "  ·  "))
+        return
 
     if shutil.which("notify-send"):  # Linux
         urgency = (

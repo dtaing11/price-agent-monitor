@@ -367,28 +367,30 @@ def cmd_test_notify(args) -> int:
 
 
 def cmd_install_cron(args) -> int:
+    from . import schedule
+
     config_mod.ensure_home()
     times = cron_mod.parse_times(args.times)
-    project_dir = Path(__file__).resolve().parent.parent
-    log_file = config_mod.home() / "cron.log"
-    lines = cron_mod.build_lines(times, project_dir, log_file)
+    kind = "scheduled tasks" if schedule.is_windows() else "cron entries"
 
     if args.dry_run:
-        print(cron_mod.render_block(lines))
+        print(schedule.preview(times))
         return 0
-    block = cron_mod.install(times, project_dir, log_file)
-    print(f"{BOLD}installed{RESET} {len(times)} cron entries:")
-    print(block)
-    print(f"\nlog: {log_file}")
-    print("verify with:  crontab -l")
+    print(f"{BOLD}installed{RESET} {len(times)} {kind}:")
+    print(schedule.install(times))
+    print(f"\nlog: {schedule.log_file()}")
+    print(f"verify with:  {schedule.verify_hint()}")
     return 0
 
 
 def cmd_uninstall_cron(args) -> int:
+    from . import schedule
+
+    kind = "scheduled tasks" if schedule.is_windows() else "cron entries"
     print(
-        "removed pricemon cron entries"
-        if cron_mod.uninstall()
-        else "no pricemon cron entries found"
+        f"removed pricemon {kind}"
+        if schedule.uninstall()
+        else f"no pricemon {kind} found"
     )
     return 0
 
@@ -571,11 +573,15 @@ def build_parser() -> argparse.ArgumentParser:
     a.set_defaults(func=cmd_test_notify)
 
     a = sub.add_parser(
-        "install-cron", help="run the agent automatically (default: 08:00 and 20:00)"
+        "install-cron",
+        help="run the agent automatically twice a day (cron, or Windows Task "
+        "Scheduler) — default 08:00 and 20:00",
     )
     a.add_argument("--times", default="08:00,20:00", help="comma-separated HH:MM")
     a.add_argument(
-        "--dry-run", action="store_true", help="print the crontab block, change nothing"
+        "--dry-run",
+        action="store_true",
+        help="print what would be scheduled, change nothing",
     )
     a.set_defaults(func=cmd_install_cron)
 
@@ -593,7 +599,8 @@ def build_parser() -> argparse.ArgumentParser:
     a.set_defaults(func=cmd_serve)
 
     a = sub.add_parser(
-        "install-desktop", help="add Price Monitor to your applications menu (Linux)"
+        "install-desktop",
+        help="add Price Monitor to your applications menu (Linux / Windows)",
     )
     a.set_defaults(func=cmd_install_desktop)
 

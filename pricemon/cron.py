@@ -53,7 +53,7 @@ def _runner_env() -> str:
 
     parts = [f'PATH="{":".join(paths)}"', f'HOME="{home}"']
     # Needed for notify-send under cron on Linux desktops.
-    uid = os.getuid()
+    uid = os.getuid() if hasattr(os, "getuid") else 0
     if sys.platform.startswith("linux"):
         parts += [
             'DISPLAY="${DISPLAY:-:0}"',

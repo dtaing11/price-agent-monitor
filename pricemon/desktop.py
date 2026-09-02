@@ -9,6 +9,7 @@ Order of preference:
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import sys
@@ -29,7 +30,31 @@ APP_BROWSERS = (
     "microsoft-edge",
     "microsoft-edge-stable",
     "vivaldi",
+    # Windows names; these are not on PATH by default, see _windows_browsers()
+    "chrome.exe",
+    "msedge.exe",
 )
+
+WINDOWS_BROWSER_PATHS = (
+    r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+    r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+    r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+    r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+    r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe",
+)
+
+
+def _app_browsers() -> list[str]:
+    """Browsers that can open a chromeless window, in preference order.
+
+    On Windows the browsers are rarely on PATH, so their usual install
+    locations are checked too.
+    """
+    found = [path for name in APP_BROWSERS if (path := shutil.which(name))]
+    if sys.platform == "win32":
+        found += [p for p in WINDOWS_BROWSER_PATHS if Path(p).exists()]
+    return found
+
 
 ICON_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
   <rect width="64" height="64" rx="14" fill="#1f2a44"/>
@@ -67,10 +92,7 @@ def launch(port: int = 8787) -> int:
     except Exception as exc:  # noqa: BLE001 - fall back to a browser window
         print(f"native window unavailable ({exc}); using a browser window")
 
-    for browser in APP_BROWSERS:  # 2. app-mode browser window
-        binary = shutil.which(browser)
-        if not binary:
-            continue
+    for binary in _app_browsers():  # 2. app-mode browser window
         profile = config_mod.home() / "browser-profile"
         profile.mkdir(parents=True, exist_ok=True)
         proc = subprocess.Popen(
@@ -85,7 +107,7 @@ def launch(port: int = 8787) -> int:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
-        print(f"Price Monitor running in a {browser} window ({url})")
+        print(f"Price Monitor running in a {Path(binary).stem} window ({url})")
         print("close the window, or press ctrl-c here, to quit")
         try:
             proc.wait()
@@ -103,6 +125,54 @@ def launch(port: int = 8787) -> int:
 
 
 def install_launcher() -> Path:
+    """Put Price Monitor in the OS application menu."""
+    if sys.platform == "win32":
+        return _install_windows_shortcut()
+    return _install_desktop_entry()
+
+
+def _install_windows_shortcut() -> Path:
+    """A Start Menu shortcut pointing at a .cmd that launches the app."""
+    launcher = config_mod.home() / "pricemon-app.cmd"
+    python = Path(sys.executable)
+    quiet = python.with_name("pythonw.exe")
+    launcher.parent.mkdir(parents=True, exist_ok=True)
+    launcher.write_text(
+        "\r\n".join(
+            [
+                "@echo off",
+                f'cd /d "{Path(__file__).resolve().parent.parent}"',
+                f'"{quiet if quiet.exists() else python}" -m pricemon app',
+            ]
+        )
+        + "\r\n",
+        encoding="utf-8",
+    )
+
+    start_menu = (
+        Path(os.environ.get("APPDATA", Path.home() / "AppData/Roaming"))
+        / "Microsoft/Windows/Start Menu/Programs"
+    )
+    start_menu.mkdir(parents=True, exist_ok=True)
+    shortcut = start_menu / "Price Monitor.lnk"
+    script = (
+        "$s = (New-Object -ComObject WScript.Shell).CreateShortcut("
+        f"'{shortcut}'); $s.TargetPath = '{launcher}'; "
+        f"$s.WorkingDirectory = '{launcher.parent}'; "
+        "$s.Description = 'Track product prices'; $s.Save()"
+    )
+    for shell in ("powershell.exe", "powershell", "pwsh"):
+        if shutil.which(shell):
+            subprocess.run(
+                [shell, "-NoProfile", "-NonInteractive", "-Command", script],
+                capture_output=True,
+                check=False,
+            )
+            break
+    return shortcut if shortcut.exists() else launcher
+
+
+def _install_desktop_entry() -> Path:
     """Write a .desktop entry so the app shows up in the applications menu."""
     apps = Path.home() / ".local/share/applications"
     icons = Path.home() / ".local/share/icons/hicolor/scalable/apps"
