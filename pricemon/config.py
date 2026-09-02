@@ -18,6 +18,13 @@ DEFAULTS: dict[str, Any] = {
         "timeout": 25,
         "max_retries": 3,
         "min_delay_per_domain": 3.0,  # seconds between hits on the same host
+        # How many sites to check at once. Requests to the same host still
+        # queue behind min_delay_per_domain, so this speeds up a varied
+        # watchlist without hitting any one shop harder.
+        "workers": 6,
+        # Browser renders and LLM calls are much heavier than a plain fetch;
+        # this many may run at once, regardless of `workers`.
+        "heavy_workers": 2,
         # Off by default: this is a personal watchlist checked a couple of
         # times a day, not a crawler. Politeness is enforced by the throttle
         # and retry budget above instead. Set true to honour robots.txt.

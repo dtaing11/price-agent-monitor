@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import threading
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urlparse
 
 import requests
@@ -24,10 +27,29 @@ class Agent:
         self.cfg = cfg
         self.verbose = verbose
         self.llm = LLM(cfg["llm"])
-        self.session = requests.Session()
+        # requests.Session is not safe to share between threads, so each worker
+        # gets its own. Connection pooling still applies within a thread.
+        self._local = threading.local()
+        # Browsers and LLM calls are far heavier than an HTTP fetch; letting
+        # every worker start Chromium at once would swamp the machine.
+        self._heavy = threading.Semaphore(
+            max(1, int(cfg["fetch"].get("heavy_workers", 2)))
+        )
+
+    @property
+    def session(self) -> requests.Session:
+        session = getattr(self._local, "session", None)
+        if session is None:
+            session = requests.Session()
+            self._local.session = session
+        return session
 
     def log(self, msg: str) -> None:
-        if self.verbose:
+        """Collect output per product, so parallel checks do not interleave."""
+        buffer = getattr(self._local, "buffer", None)
+        if buffer is not None:
+            buffer.append(msg)
+        elif self.verbose:
             print(msg)
 
     # ------------------------------------------------------------------
@@ -51,7 +73,8 @@ class Agent:
 
         if render_first:
             try:
-                html, final_url = fetch_rendered(url, self.cfg["fetch"])
+                with self._heavy:
+                    html, final_url = fetch_rendered(url, self.cfg["fetch"])
                 self.log("  rendered in a headless browser")
             except FetchError as exc:
                 self.log(f"  browser fetch failed ({exc}); falling back to plain HTTP")
@@ -104,7 +127,8 @@ class Agent:
                 f"conf {best.confidence:.2f}) - asking Claude..."
             )
             try:
-                llm_ex = self.llm.extract(html, final_url, candidates)
+                with self._heavy:
+                    llm_ex = self.llm.extract(html, final_url, candidates)
             except (LLMUnavailable, Exception) as exc:  # noqa: BLE001
                 self.log(f"  LLM extraction unavailable: {exc}")
             else:
@@ -315,7 +339,20 @@ class Agent:
         return second, self._implausible(p, second)
 
     def check(self, p: Product, use_llm: bool = True) -> CheckResult:
-        self.log(f"→ {p.name}")
+        lines: list[str] = []
+        self._local.buffer = lines
+        try:
+            return self._check(p, use_llm=use_llm, lines=lines)
+        finally:
+            self._local.buffer = None
+            if self.verbose:
+                for line in lines:
+                    print(line)
+
+    def _check(
+        self, p: Product, use_llm: bool = True, lines: list[str] | None = None
+    ) -> CheckResult:
+        self.log(f"→ {p.title or p.name}")
         try:
             ex, _ = self.scrape(p.url, product=p, use_llm=use_llm)
         except FetchError as exc:
@@ -374,7 +411,9 @@ class Agent:
             f"  {format_price(ex.price, ex.currency or p.currency)}"
             f" via {ex.method} (conf {ex.confidence:.2f}){stock}"
         )
-        return CheckResult(product=p, extraction=ex, alerts=alerts)
+        return CheckResult(
+            product=p, extraction=ex, alerts=alerts, log=list(lines or [])
+        )
 
     def _record_failure(self, p: Product, error: str) -> CheckResult:
         p.fail_count += 1
@@ -398,12 +437,19 @@ class Agent:
             )
             self.store.record_alerts(p, alerts)
         return CheckResult(
-            product=p, extraction=Extraction(method="error"), alerts=alerts, error=error
+            product=p,
+            extraction=Extraction(method="error"),
+            alerts=alerts,
+            error=error,
+            log=list(getattr(self._local, "buffer", None) or []),
         )
 
     # ------------------------------------------------------------------
     def check_all(
-        self, names: list[str] | None = None, use_llm: bool = True
+        self,
+        names: list[str] | None = None,
+        use_llm: bool = True,
+        on_progress: Callable[[CheckResult], None] | None = None,
     ) -> list[CheckResult]:
         products = (
             [self.store.get_product(n) for n in names]
@@ -412,12 +458,45 @@ class Agent:
         )
         products = [p for p in products if p]
 
-        results, alerts = [], []
-        for p in products:
-            res = self.check(p, use_llm=use_llm)
-            results.append(res)
-            alerts.extend(res.alerts)
+        workers = max(1, int(self.cfg["fetch"].get("workers", 6)))
+        results: list[CheckResult] = []
 
+        if workers == 1 or len(products) <= 1:
+            for p in products:
+                res = self.check(p, use_llm=use_llm)
+                results.append(res)
+                if on_progress:
+                    on_progress(res)
+        else:
+            # Several sites at once. Requests to the *same* host still queue
+            # behind the fetcher's per-domain throttle, so this speeds up a
+            # varied watchlist without hammering any one shop.
+            self.log(f"checking {len(products)} products, {workers} at a time")
+            ordered: dict[int, CheckResult] = {}
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                futures = {
+                    pool.submit(self.check, p, use_llm): i
+                    for i, p in enumerate(products)
+                }
+                for future in as_completed(futures):
+                    index = futures[future]
+                    try:
+                        res = future.result()
+                    except Exception as exc:  # noqa: BLE001 - one bad page must
+                        # not take down the whole run
+                        res = self._record_failure(
+                            products[index], f"{type(exc).__name__}: {exc}"
+                        )
+                    ordered[index] = res
+                    if on_progress:
+                        on_progress(res)
+            results = [ordered[i] for i in sorted(ordered)]
+            if self.verbose:
+                for res in results:
+                    for line in res.log:
+                        print(line)
+
+        alerts = [a for res in results for a in res.alerts]
         from . import notify
 
         notify.send(self._dedupe_groups(alerts, results), self.cfg["notify"])

@@ -354,8 +354,12 @@ function renderHeadline() {
   const box = $("#headline"), ps = state.products, job = state.job || {};
   box.innerHTML = "";
   if (job.busy) {
-    box.append(el("span", { className: "working" }),
-               el("span", { textContent: ` Checking ${job.done}/${job.total}${job.current ? " · " + job.current : ""}` }));
+    // total is 0 for the moment between starting the run and counting the
+    // products, so don't flash "0/0" at people.
+    const progress = job.total
+      ? ` Checking ${job.done}/${job.total}${job.current ? " · " + job.current : ""}`
+      : " Starting checks…";
+    box.append(el("span", { className: "working" }), el("span", { textContent: progress }));
     $("#btn-check").disabled = true;
     return;
   }

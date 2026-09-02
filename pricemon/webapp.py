@@ -73,26 +73,27 @@ class JobRunner:
             )
             with self.lock:
                 self.total = len(products)
+                self.current = f"{len(products)} sites at once"
 
-            alerts = []
-            for product in products:
-                with self.lock:
-                    self.current = product.name
-                result = agent.check(product)
-                alerts.extend(result.alerts)
+            def progress(result) -> None:
                 with self.lock:
                     self.done += 1
+                    label = result.product.title or result.product.name
                     if result.error:
-                        self.log.append(f"✗ {product.name}: {result.error}")
+                        self.log.append(f"✗ {label[:48]}: {result.error[:70]}")
                     else:
-                        price = result.extraction.price
                         self.log.append(
-                            f"✓ {product.name}: {price} ({result.extraction.method})"
+                            f"✓ {label[:48]}: {result.extraction.price} "
+                            f"({result.extraction.method})"
                         )
+                    remaining = self.total - self.done
+                    self.current = f"{remaining} to go" if remaining else "finishing up"
 
-            from . import notify
-
-            notify.send(alerts, {**cfg["notify"], "console": False})
+            # check_all fans out across sites and sends the notifications.
+            results = agent.check_all(
+                names=[p.name for p in products], on_progress=progress
+            )
+            alerts = [a for r in results for a in r.alerts]
             with self.lock:
                 self.last_summary = f"{len(products)} checked, {len(alerts)} alert(s)"
         except Exception as exc:  # noqa: BLE001 - a failed run must not kill the app

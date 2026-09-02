@@ -112,3 +112,39 @@ class TestPriceContext(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestConcurrentAccess(unittest.TestCase):
+    """Checks run several sites at once, so the store is used from threads."""
+
+    def test_parallel_writes_all_land(self):
+        import threading
+
+        store = _store()
+        products = [
+            store.add_product(Product(name=f"p{i}", url=f"https://s{i}.test/p"))
+            for i in range(8)
+        ]
+
+        errors: list[Exception] = []
+
+        def work(product):
+            try:
+                for price in (10.0, 11.0, 12.0):
+                    store.record(product, Extraction(price=price, method="t"))
+                product.last_price = 12.0
+                store.update_product(product)
+            except Exception as exc:  # noqa: BLE001 - recorded and asserted below
+                errors.append(exc)
+
+        threads = [threading.Thread(target=work, args=(p,)) for p in products]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        self.assertEqual(errors, [])
+        for product in products:
+            with self.subTest(product=product.name):
+                self.assertEqual(len(store.history(product)), 3)
+                self.assertEqual(store.get_product(product.name).last_price, 12.0)

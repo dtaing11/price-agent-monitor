@@ -69,6 +69,7 @@ class CheckResult:
     extraction: Extraction
     alerts: list = field(default_factory=list)
     error: str | None = None
+    log: list = field(default_factory=list)
 
     @property
     def ok(self) -> bool:

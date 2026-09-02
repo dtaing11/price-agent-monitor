@@ -348,9 +348,16 @@ not be nagged twice a day forever.
 
 ## Load and etiquette
 
-- One request per page per run, with a real browser User-Agent.
+- **Several sites are checked at once** (`fetch.workers`, 6 by default), so a
+  watchlist finishes in about the time of its slowest single page rather than
+  the sum of all of them. Measured on six shops: 12.4s of work done in 9.3s,
+  where 9.3s *was* the one page needing a browser render.
 - Per-domain throttling (`min_delay_per_domain`, 3s default) with jitter, so
-  several products on the same shop never fire at once.
+  several products **on the same shop** still go one at a time, however many
+  workers are running. Concurrency spreads across shops, never within one.
+- Browser renders and LLM calls are capped separately (`fetch.heavy_workers`,
+  2 by default) — starting six copies of Chromium at once helps nobody.
+- One request per page per run, with a real browser User-Agent.
 - Retries with exponential backoff, honouring `Retry-After` on 429s.
 - **`robots.txt` is not consulted by default.** This is a personal watchlist
   checked a couple of times a day, not a crawler. Set
