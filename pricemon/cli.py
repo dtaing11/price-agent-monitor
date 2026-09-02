@@ -61,9 +61,17 @@ def cmd_add(args) -> int:
             results = rank_with_ai(args.search, results, LLM(cfg["llm"]))
         priced = [r for r in results if r.price is not None]
         if not priced:
-            print("no product page with a readable price was found", file=sys.stderr)
+            print(
+                f"no product page with a readable price was found for {args.search!r}",
+                file=sys.stderr,
+            )
             for r in results[:5]:
                 print(f"  tried {r.url}  ({r.note})", file=sys.stderr)
+            print(
+                "\ntry naming the exact model, narrowing with "
+                "--retailer amazon, or pasting the product link directly",
+                file=sys.stderr,
+            )
             return 1
         if args.pick is None and len(priced) > 1:
             print(f"\n{BOLD}  #  PRICE        RETAILER         PRODUCT{RESET}")
@@ -127,6 +135,7 @@ def cmd_add(args) -> int:
         name=name,
         url=args.url,
         title=(ex.title if ex else None),
+        image=(ex.image if ex else None),
         selector=args.selector,
         learned_selector=(
             ex.selector if ex and ex.method in ("llm", "heuristic") else None

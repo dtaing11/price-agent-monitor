@@ -11,6 +11,7 @@ returns real retailer links rather than a JS shell.
 
 from __future__ import annotations
 
+import base64
 import re
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -20,10 +21,8 @@ import requests
 
 from . import sites
 from .extract import attr_str, extract
-from .fetcher import FetchError, fetch
+from .fetcher import FetchError, _throttle, fetch
 from .money import format_price
-
-SEARCH_URL = "https://html.duckduckgo.com/html/?q={query}"
 
 # Path shapes that mean "this is one product", per retailer and in general.
 PRODUCT_PATTERNS = (
@@ -103,10 +102,19 @@ class SearchResult:
 
 
 def _decode(href: str) -> str:
-    """DuckDuckGo wraps results in a redirect; unwrap it."""
-    if "uddg=" in href:
-        target = parse_qs(urlparse(href).query).get("uddg", [""])[0]
-        return unquote(target)
+    """Unwrap the redirect URLs search engines wrap their results in."""
+    if "uddg=" in href:  # DuckDuckGo
+        return unquote(parse_qs(urlparse(href).query).get("uddg", [""])[0])
+    if "bing.com/ck/a" in href:  # Bing: base64 in the u= parameter
+        raw = parse_qs(urlparse(href).query).get("u", [""])[0]
+        if raw.startswith("a1"):
+            payload = raw[2:]
+            try:
+                return base64.urlsafe_b64decode(
+                    payload + "=" * (-len(payload) % 4)
+                ).decode("utf-8", "ignore")
+            except (ValueError, UnicodeDecodeError):
+                return ""
     return href
 
 
@@ -120,46 +128,120 @@ def _looks_like_product(url: str) -> bool:
     return bool(_PRODUCT_RE.search(parsed.path))
 
 
+# Three engines, tried in order. One of them rate-limiting should not take the
+# whole feature down with it, and none of them is hit hard: results are found
+# on the first engine almost every time.
+ENGINES: tuple[tuple[str, str], ...] = (
+    ("duckduckgo", "https://html.duckduckgo.com/html/?q={q}"),
+    ("mojeek", "https://www.mojeek.com/search?q={q}"),
+    ("bing", "https://www.bing.com/search?q={q}"),
+)
+
+# Where to look when the open web only offers category pages, blog posts and
+# reviews - which is what a query like "ikea billy bookcase" returns.
+FALLBACK_SITES = "site:amazon.com OR site:walmart.com OR site:ebay.com"
+
+
+class SearchBlocked(RuntimeError):
+    """Every engine refused to answer - usually a rate limit."""
+
+
+def _parse_results(engine: str, html: str) -> list[tuple[str, str]]:
+    from bs4 import BeautifulSoup
+
+    soup = BeautifulSoup(html, "html.parser")
+    out: list[tuple[str, str]] = []
+
+    if engine == "duckduckgo":
+        anchors = soup.select("a.result__a")
+    elif engine == "mojeek":
+        anchors = soup.select("a.title, ul.results-standard li h2 a")
+    else:
+        anchors = soup.select("li.b_algo h2 a")
+
+    for anchor in anchors:
+        href = _decode(attr_str(anchor, "href") or "")
+        if href.startswith("http"):
+            out.append((href, anchor.get_text(" ", strip=True)[:160]))
+    return out
+
+
+def _ask_engine(
+    engine: str, url_template: str, terms: str, cfg: dict
+) -> list[tuple[str, str]]:
+    """Query one engine. Returns [] when it declines to answer."""
+    _throttle(url_template, float(cfg.get("min_delay_per_domain", 3.0)))
+    try:
+        resp = requests.get(
+            url_template.format(q=quote_plus(terms)),
+            headers={
+                "User-Agent": cfg["user_agent"],
+                "Accept": "text/html,application/xhtml+xml",
+                "Accept-Language": "en-US,en;q=0.9",
+            },
+            timeout=cfg.get("timeout", 25),
+        )
+    except requests.RequestException:
+        return []
+    # DuckDuckGo answers a rate limit with 202 and an "anomaly" page rather
+    # than an error status, so status alone is not enough to go on.
+    if resp.status_code != 200 or "anomaly" in resp.text[:4000].lower():
+        return []
+    return _parse_results(engine, resp.text)
+
+
 def find_urls(
     query: str, cfg: dict, retailers: list[str] | None = None, limit: int = 12
 ) -> list[tuple[str, str]]:
-    """Search the web for candidate product pages. Returns [(url, title)]."""
-    terms = query.strip()
+    """Search for candidate product pages. Returns [(url, title)].
+
+    Stops at the first engine and phrasing that yields real product pages, so
+    the common case is a single request.
+    """
+    domains: list[str] = []
     if retailers:
-        domains: list[str] = []
         for name in retailers:
             rule = next(
                 (r for r in sites.RULES if r.name.lower().startswith(name.lower())),
                 None,
             )
             domains.extend(rule.domains[:1] if rule else [name])
-        terms += " " + " OR ".join(f"site:{d}" for d in domains)
 
-    from bs4 import BeautifulSoup
+    if domains:
+        variants = [f"{query} " + " OR ".join(f"site:{d}" for d in domains)]
+    else:
+        variants = [query, f"{query} buy price", f"{query} {FALLBACK_SITES}"]
 
-    resp = requests.get(
-        SEARCH_URL.format(query=quote_plus(terms)),
-        headers={
-            "User-Agent": cfg["user_agent"],
-            "Accept": "text/html,application/xhtml+xml",
-            "Accept-Language": "en-US,en;q=0.9",
-        },
-        timeout=cfg.get("timeout", 25),
-    )
-    resp.raise_for_status()
-    soup = BeautifulSoup(resp.text, "html.parser")
+    answered = False
+    for terms in variants:
+        for engine, template in ENGINES:
+            raw = _ask_engine(engine, template, terms, cfg)
+            if not raw:
+                continue
+            answered = True
+            found = _keep_products(raw, limit)
+            if found:
+                return found
 
+    if not answered:
+        raise SearchBlocked(
+            "every search engine declined to answer (usually a rate limit). "
+            "Wait a minute, or paste the product link instead."
+        )
+    return []
+
+
+def _keep_products(raw: list[tuple[str, str]], limit: int) -> list[tuple[str, str]]:
     found: list[tuple[str, str]] = []
     seen: set[str] = set()
-    for anchor in soup.select("a.result__a, a.result__url"):
-        href = _decode(attr_str(anchor, "href") or "")
-        if not href.startswith("http") or not _looks_like_product(href):
+    for href, title in raw:
+        if not _looks_like_product(href):
             continue
         canonical = sites.canonical_url(href)
         if canonical in seen:
             continue
         seen.add(canonical)
-        found.append((canonical, anchor.get_text(" ", strip=True)[:160]))
+        found.append((canonical, title))
         if len(found) >= limit:
             break
     return found
