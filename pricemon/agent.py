@@ -125,6 +125,31 @@ class Agent:
         return best, candidates
 
     # ------------------------------------------------------------------
+    def _context(self, p: Product, price: float | None, cur: str | None) -> str:
+        """A short verdict on whether this price is actually worth acting on.
+
+        "Dropped 12%" does not tell you whether to buy. "Lowest in 47 days"
+        does.
+        """
+        if price is None:
+            return ""
+        ctx = self.store.price_context(p, price)
+        if ctx.get("points", 0) < 2:
+            return ""
+
+        low = ctx.get("low")
+        days = ctx.get("days") or 0
+        span = f"in {days} days" if days >= 2 else "so far"
+
+        if low is not None and price <= low + 0.005:
+            return f" — lowest {span}"
+        if low:
+            above = (price - low) / low * 100
+            if above <= 5:
+                return f" — within {above:.0f}% of its lowest {span} ({format_price(low, cur)})"
+            return f" — still {above:.0f}% above its lowest {span} ({format_price(low, cur)})"
+        return ""
+
     def _decide(self, p: Product, ex: Extraction) -> list[Alert]:
         alerts: list[Alert] = []
         cur = ex.currency or p.currency
@@ -151,7 +176,8 @@ class Agent:
                             product=p.name,
                             price=ex.price,
                             message=f"{label} hit your target: {now} "
-                            f"(target {format_price(p.target_price, cur)})",
+                            f"(target {format_price(p.target_price, cur)})"
+                            f"{self._context(p, ex.price, cur)}",
                         )
                     )
 
@@ -166,7 +192,8 @@ class Agent:
                             product=p.name,
                             price=ex.price,
                             message=f"{label} dropped {drop:.1f}%: "
-                            f"{format_price(p.last_price, cur)} → {now}",
+                            f"{format_price(p.last_price, cur)} → {now}"
+                            f"{self._context(p, ex.price, cur)}",
                         )
                     )
 
@@ -197,7 +224,8 @@ class Agent:
                         kind="back_in_stock",
                         product=p.name,
                         price=ex.price,
-                        message=f"{label} is back in stock at {now}",
+                        message=f"{label} is back in stock at {now}"
+                        f"{self._context(p, ex.price, cur)}",
                     )
                 )
             elif p.last_in_stock is True and ex.in_stock is False:

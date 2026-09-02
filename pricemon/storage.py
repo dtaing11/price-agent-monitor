@@ -194,6 +194,54 @@ class Store:
             (product.id,),
         ).fetchone()
 
+    def price_context(self, product: Product, price: float) -> dict:
+        """How good is `price`, judged against everything seen so far?
+
+        Returns the all-time low, the date it was seen, how many days of
+        history exist, and how many of the recorded prices this one beats.
+        """
+        row = self.conn.execute(
+            """SELECT MIN(price) lo, MAX(price) hi, COUNT(price) n,
+                      MIN(ts) first_ts
+               FROM observations WHERE product_id = ? AND price IS NOT NULL""",
+            (product.id,),
+        ).fetchone()
+        if not row or not row["n"]:
+            return {"points": 0}
+
+        low_row = self.conn.execute(
+            """SELECT ts FROM observations
+               WHERE product_id = ? AND price IS NOT NULL
+               ORDER BY price ASC, ts DESC LIMIT 1""",
+            (product.id,),
+        ).fetchone()
+        beaten = self.conn.execute(
+            """SELECT COUNT(*) c FROM observations
+               WHERE product_id = ? AND price IS NOT NULL AND price > ?""",
+            (product.id, price),
+        ).fetchone()["c"]
+
+        days = 0
+        if row["first_ts"]:
+            from datetime import datetime, timezone
+
+            try:
+                first = datetime.fromisoformat(row["first_ts"])
+                if first.tzinfo is None:
+                    first = first.replace(tzinfo=timezone.utc)
+                days = max(0, (datetime.now(timezone.utc) - first).days)
+            except ValueError:
+                days = 0
+
+        return {
+            "points": row["n"],
+            "low": row["lo"],
+            "high": row["hi"],
+            "low_ts": low_row["ts"] if low_row else None,
+            "days": days,
+            "beats": beaten,
+        }
+
     # -- alerts -----------------------------------------------------------
     def record_alerts(self, product: Product, alerts: Iterable[Alert]) -> None:
         for a in alerts:
