@@ -1,22 +1,24 @@
 # pricemon — an AI price-monitoring agent
 
-Watches product pages, records price history, and tells you when something drops
-or hits your target. It scrapes deterministically first (schema.org, microdata,
-meta tags, CSS selectors) and only asks Claude when the page defeats those —
-then **remembers the selector Claude found**, so the next run is instant and free.
+Track as many products as you like, from Amazon, Walmart, IKEA, eBay or any
+other shop. It records price history, shows it in a desktop app, and tells you
+when something drops or reaches the price you set. Give it a product *name* and
+it finds the page itself — no URL needed.
 
 ```
-$ pricemon add https://www.ikea.com/us/en/p/billy-bookcase-white-00263850/ --target 35
-Fetching https://www.ikea.com/us/en/p/billy-bookcase-white-00263850/ ...
-  found $39.00 via jsonld (confidence 0.90)
-  title: BILLY, Bookcase, oak effect
-watching billy-bookcase, target $35.00
+$ pricemon add --search "logitech mx master 3s" --target 79 --pick 1
+searching for 'logitech mx master 3s' ...
+picked:       $79.11  Walmart  Logitech MX Master 3S, Wireless Performance Mouse
+  found $79.11 via site:Walmart (confidence 0.92)
+watching logitech-mx-master-3s, target $79.00
 
-$ pricemon check
-→ billy-bookcase
-  $29.00 via jsonld (conf 0.90) · in stock
-🎯 billy-bookcase hit your target: $29.00 (target $35.00) — https://www.ikea.com/...
+$ pricemon app        # the desktop tracker
 ```
+
+Extraction is deterministic first — the retailer's own markup, schema.org data,
+embedded JSON, page heuristics — and only asks Claude when a page defeats all
+of those. It then **remembers the selector Claude found**, so the next check is
+instant and free. When a site redesigns, confidence drops and it learns again.
 
 ---
 
@@ -30,10 +32,16 @@ python3 -m pip install -r requirements.txt
 mkdir -p ~/.local/bin && ln -sf "$PWD/bin/pricemon" ~/.local/bin/pricemon
 
 pricemon config                    # shows where data lives and how the AI is wired
+pricemon install-desktop           # adds it to your applications menu
 ```
 
-`libnotify-bin` gives you desktop pop-ups (`sudo apt install libnotify-bin`).
-Everything else is pure Python.
+Optional extras, each worth having:
+
+```bash
+sudo apt install libnotify-bin                    # desktop pop-up alerts
+python3 -m pip install playwright                 # lets it read Amazon & Target
+python3 -m playwright install chromium
+```
 
 State lives in `~/.price-monitor/` (`config.yaml`, `prices.db`, `cron.log`).
 Override with `PRICEMON_HOME=/some/where`.
@@ -63,22 +71,79 @@ identically — cron is just the default because it needs no root.
 
 ---
 
+## The desktop app
+
+```bash
+pricemon app          # opens the tracker in its own window
+pricemon serve        # the UI only, in your browser
+```
+
+`pricemon app` opens a real window: a native one if you have `pywebview`,
+otherwise a Chromium `--app` window with no tabs and no address bar, with its
+own taskbar entry. `pricemon install-desktop` puts it in your applications
+menu so it starts like any other program.
+
+Inside it you get every tracked product in one ledger: price, how far it has
+moved, a gauge showing where today sits between its all-time low and high with
+a notch at your target, and a history line. Click any row for its full chart,
+statistics and settings. You can add products by name from inside the app, set
+targets inline, pause a product, and run a check on demand.
+
+It is a local app — it serves on 127.0.0.1, stores everything in
+`~/.price-monitor/`, and needs no account.
+
+---
+
 ## Everyday commands
 
 | Command | What it does |
 |---|---|
-| `pricemon add <url> [--target N] [--name x] [--selector 'css']` | start watching a page |
+| `pricemon add --search "product name" --pick 1 --target N` | find the product by name and watch it |
+| `pricemon search "product name"` | show matching product pages with live prices |
+| `pricemon add <url> [--target N] [--name x] [--selector 'css']` | watch a page you already have a link to |
+| `pricemon app` / `pricemon serve` | the desktop tracker / the UI alone |
 | `pricemon list` | everything watched, with current price, target, stock, all-time low |
 | `pricemon check [name...]` | check now and fire alerts |
 | `pricemon check --quiet` | cron mode: print only when something changed |
 | `pricemon history <name>` | price history with an ASCII sparkline |
-| `pricemon report` | self-contained HTML dashboard with charts |
+| `pricemon report` | self-contained HTML dashboard you can share |
+| `pricemon install-desktop` | add it to the Linux applications menu |
 | `pricemon set <name> --target 25` | change a target (`--target -1` clears it) |
 | `pricemon set <name> --pause` / `--resume` | stop / resume checking one product |
 | `pricemon alerts` | recent alert log |
 | `pricemon export prices.csv` | every observation as CSV |
 | `pricemon watch --interval 3600` | foreground loop, for when you're hovering |
 | `pricemon test-notify` | prove your notification channels work |
+
+---
+
+## Finding products by name
+
+```bash
+pricemon search "sony wh-1000xm5"
+pricemon search "air fryer 5l" --retailer walmart --retailer argos
+pricemon add --search "sony wh-1000xm5" --pick 2 --target 249
+```
+
+Search finds candidate product pages, opens each one, reads its real price with
+the normal extraction cascade, and asks Claude which results are actually that
+product rather than a case, cable, older model or multi-pack. Results show the
+retailer, live price and stock, so you pick with the numbers in front of you.
+
+---
+
+## Shops it knows
+
+Built-in rules for 24 retailers — Amazon, Walmart, Target, Best Buy, eBay,
+Etsy, Newegg, Home Depot, Lowe's, Costco, Wayfair, Chewy, B&H, GameStop, Steam,
+IKEA, Argos, Currys, John Lewis, Zalando, AliExpress, Apple, Nike, Decathlon —
+covering their price markup, stock indicators and currency. Amazon links are
+canonicalised to `/dp/<ASIN>` and tracking parameters are stripped, so the same
+product can never be tracked twice under two URLs.
+
+**Anywhere else still works.** The rules are a shortcut, not a requirement, and
+they are never the last word: if a retailer redesigns, extraction falls through
+to the generic cascade and then to Claude, which learns the new selector.
 
 ---
 
@@ -89,15 +154,38 @@ Each page runs through a cascade, best evidence first:
 1. **Your pinned `--selector`** — always wins. Supports `sel@attribute`, e.g.
    `meta[itemprop="price"]@content`.
 2. **A previously learned selector** — whatever worked last time.
-3. **schema.org JSON-LD** — the `Product`/`Offer` block. Most large retailers
+3. **The retailer's own markup** — from the rules above.
+4. **schema.org JSON-LD** — the `Product`/`Offer` block. Most large retailers
    publish this; it carries price, currency *and* stock status.
-4. **Microdata / RDFa** — `[itemprop="price"]`.
-5. **Meta tags** — `product:price:amount`, `og:price:amount`.
-6. **Class/id heuristics** — elements that look like prices, scored by where
+5. **Microdata / RDFa** — `[itemprop="price"]`.
+6. **Meta tags** — `product:price:amount`, `og:price:amount`.
+7. **Embedded JSON** — `__NEXT_DATA__`, `__NUXT__`, Redux state dumps. Modern
+   storefronts ship the product as JSON and render it client-side; the number
+   is in the HTML, just not in a tag you can select. Candidates are scored by
+   key name and JSON path, so shipping, warranty and "customers also bought"
+   prices lose to the real one.
+8. **Class/id heuristics** — elements that look like prices, scored by where
    they sit on the page. Prices inside the main product region score up; ones
    inside `aside`, carousels, "related products" and listing cards score down,
    as do struck-through `<del>` originals.
-7. **Claude** — only if everything above lands below a confidence floor of 0.75.
+9. **Claude** — only if everything above lands below a confidence floor of 0.75.
+
+### Sites that hide prices from plain HTTP
+
+Amazon and Target send an empty price skeleton to anything that is not a
+browser and fill it in with JavaScript. No parser recovers a number that was
+never sent, so those get rendered in a real headless browser:
+
+```
+plain HTTP  →  headless browser  →  Claude
+```
+
+Each step costs more than the last, so each only runs when the cheaper one came
+up short. Install Playwright (see above) and it happens automatically for
+high-protection sites, when the raw HTML has no price, or when a bot wall is
+detected. Without Playwright the agent still works — it just cannot read those
+particular retailers. Force it on or off with `fetch.browser: always | auto |
+never`.
 
 Claude gets a condensed version of the page (scripts stripped, price-bearing
 fragments kept) and returns the price, currency, stock, *and a CSS selector*.
@@ -203,15 +291,23 @@ line — re-run `pricemon install-cron` from inside your desktop session.
 pricemon/
   cli.py        commands and argument parsing
   agent.py      the loop: fetch → extract → decide → remember → alert
-  fetcher.py    polite HTTP: robots, throttling, retries, encoding
+  fetcher.py    polite HTTP + headless-browser rendering
   extract.py    the deterministic extraction cascade
+  sites.py      per-retailer rules, URL canonicalisation, bot-wall detection
+  search.py     product name → candidate pages, priced and AI-ranked
   llm.py        Claude fallback + page condensing + selector learning
   money.py      price-string parsing ($1,234.56 / 1.234,56 € / ₹1,49,900)
   storage.py    SQLite: products, observations, alerts
   notify.py     console / desktop / webhook / email
   cron.py       crontab block management
-  report.py     HTML dashboard
+  webapp.py     local JSON API behind the desktop app
+  desktop.py    window launcher and .desktop entry
+  static/       the UI (no framework, no CDN, works offline)
+  report.py     standalone HTML dashboard
 tests/          unit tests:  python3 -m unittest discover -s tests
 ```
+
+`.claude/skills/pricemon-ui/` holds this project's UI design system, scoped to
+this repository rather than installed globally.
 
 Run the tests with `python3 -m unittest discover -s tests -v`.
