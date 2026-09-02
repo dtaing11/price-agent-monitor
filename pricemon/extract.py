@@ -8,57 +8,147 @@ from __future__ import annotations
 
 import json
 import re
-from typing import List, Optional, Tuple
+from typing import Any
 
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, FeatureNotFound
+from soupsieve import SelectorSyntaxError
 
 from .models import Extraction
 from .money import parse_price
 
 OUT_OF_STOCK_MARKERS = [
-    "out of stock", "sold out", "currently unavailable", "no longer available",
-    "out-of-stock", "notify me when", "back in stock", "temporarily unavailable",
-    "ausverkauft", "rupture de stock", "agotado", "esaurito",
+    "out of stock",
+    "sold out",
+    "currently unavailable",
+    "no longer available",
+    "out-of-stock",
+    "notify me when",
+    "back in stock",
+    "temporarily unavailable",
+    "ausverkauft",
+    "rupture de stock",
+    "agotado",
+    "esaurito",
 ]
-IN_STOCK_MARKERS = ["in stock", "add to cart", "add to basket", "add to bag", "buy now", "in-stock"]
+IN_STOCK_MARKERS = [
+    "in stock",
+    "add to cart",
+    "add to basket",
+    "add to bag",
+    "buy now",
+    "in-stock",
+]
 
 # class/id fragments that suggest we found the *current* price
 GOOD_HINTS = ["price", "prijs", "preis", "prezzo", "precio", "amount", "cost"]
-STRONG_HINTS = ["sale", "now", "current", "our-price", "offer", "final", "deal", "special"]
+STRONG_HINTS = [
+    "sale",
+    "now",
+    "current",
+    "our-price",
+    "offer",
+    "final",
+    "deal",
+    "special",
+]
 # Ancestor containers that mark the *main* product region of a page...
 MAIN_REGION_HINTS = [
-    "product_main", "product-main", "product-info", "product-detail", "product-page",
-    "product-summary", "pdp", "buybox", "buy-box", "product-single", "productview",
-    "product-form", "offers",
+    "product_main",
+    "product-main",
+    "product-info",
+    "product-detail",
+    "product-page",
+    "product-summary",
+    "pdp",
+    "buybox",
+    "buy-box",
+    "product-single",
+    "productview",
+    "product-form",
+    "offers",
 ]
 # ...and ones that mark recommendation carousels, upsells and listing cards.
 ASIDE_REGION_HINTS = [
-    "product_pod", "recommend", "related", "upsell", "cross-sell", "crosssell",
-    "also-bought", "also-viewed", "similar", "carousel", "slider", "recently",
-    "sidebar", "widget", "suggest", "you-may", "bundle", "accessor", "cart",
-    "wishlist", "compare", "footer", "nav", "breadcrumb",
+    "product_pod",
+    "recommend",
+    "related",
+    "upsell",
+    "cross-sell",
+    "crosssell",
+    "also-bought",
+    "also-viewed",
+    "similar",
+    "carousel",
+    "slider",
+    "recently",
+    "sidebar",
+    "widget",
+    "suggest",
+    "you-may",
+    "bundle",
+    "accessor",
+    "cart",
+    "wishlist",
+    "compare",
+    "footer",
+    "nav",
+    "breadcrumb",
 ]
 
 BAD_HINTS = [
-    "old", "was", "list", "regular", "strike", "compare", "rrp", "msrp", "original",
-    "shipping", "tax", "vat", "installment", "per-month", "monthly", "credit",
-    "range", "from", "unit", "save", "discount", "total", "subtotal", "cart",
+    "old",
+    "was",
+    "list",
+    "regular",
+    "strike",
+    "compare",
+    "rrp",
+    "msrp",
+    "original",
+    "shipping",
+    "tax",
+    "vat",
+    "installment",
+    "per-month",
+    "monthly",
+    "credit",
+    "range",
+    "from",
+    "unit",
+    "save",
+    "discount",
+    "total",
+    "subtotal",
+    "cart",
 ]
+
+
+def attr_str(el: Any, name: str) -> str | None:
+    """bs4 returns a list for multi-valued attributes; flatten to a string."""
+    val = el.get(name)
+    if val is None:
+        return None
+    if isinstance(val, (list, tuple)):
+        return " ".join(str(v) for v in val)
+    return str(val)
 
 
 def _soup(html: str) -> BeautifulSoup:
     try:
         return BeautifulSoup(html, "lxml")
-    except Exception:
+    except FeatureNotFound:  # lxml not installed
         return BeautifulSoup(html, "html.parser")
 
 
-def page_title(soup: BeautifulSoup) -> Optional[str]:
-    for sel, attr in (('meta[property="og:title"]', "content"),
-                      ('meta[name="twitter:title"]', "content")):
+def page_title(soup: BeautifulSoup) -> str | None:
+    for sel, attr in (
+        ('meta[property="og:title"]', "content"),
+        ('meta[name="twitter:title"]', "content"),
+    ):
         el = soup.select_one(sel)
-        if el and el.get(attr):
-            return el[attr].strip()[:200]
+        value = attr_str(el, attr) if el else None
+        if value:
+            return value.strip()[:200]
     h1 = soup.find("h1")
     if h1 and h1.get_text(strip=True):
         return h1.get_text(strip=True)[:200]
@@ -67,51 +157,68 @@ def page_title(soup: BeautifulSoup) -> Optional[str]:
     return None
 
 
-def detect_stock(soup: BeautifulSoup, html: str) -> Optional[bool]:
+def detect_stock(soup: BeautifulSoup, html: str) -> bool | None:
     """True / False / None (unknown)."""
     for el in soup.select('[itemprop="availability"], link[itemprop="availability"]'):
-        val = (el.get("href") or el.get("content") or el.get_text() or "").lower()
+        val = (
+            attr_str(el, "href") or attr_str(el, "content") or el.get_text() or ""
+        ).lower()
         if "instock" in val:
             return True
         if "outofstock" in val or "soldout" in val or "discontinued" in val:
             return False
 
     text = re.sub(r"\s+", " ", soup.get_text(" ", strip=True).lower())[:20000]
-    for marker in OUT_OF_STOCK_MARKERS:
-        if marker in text and "back in stock" != marker:
-            return False
-    for marker in IN_STOCK_MARKERS:
-        if marker in text:
-            return True
+    buyable = any(
+        m in text for m in ("add to cart", "add to basket", "add to bag", "buy now")
+    )
+    # Only trust prose about stock when there is no live buy button - plenty of
+    # in-stock pages mention "notify me when..." for other variants.
+    if not buyable:
+        for marker in OUT_OF_STOCK_MARKERS:
+            if marker != "back in stock" and marker in text:
+                return False
+    if buyable or any(m in text for m in IN_STOCK_MARKERS):
+        return True
     return None
 
 
 # --------------------------------------------------------------------------
 # Strategy 1: an explicit CSS selector ("div.price" or "div.price@content")
 # --------------------------------------------------------------------------
-def from_selector(soup: BeautifulSoup, selector: str, method: str = "selector",
-                  confidence: float = 0.95) -> Optional[Extraction]:
+def from_selector(
+    soup: BeautifulSoup,
+    selector: str,
+    method: str = "selector",
+    confidence: float = 0.95,
+) -> Extraction | None:
     if not selector:
         return None
     sel, _, attr = selector.partition("@")
     try:
         el = soup.select_one(sel.strip())
-    except Exception:
-        return None
+    except (SelectorSyntaxError, NotImplementedError, ValueError):
+        return None  # a malformed or unsupported selector is not fatal
     if el is None:
         return None
-    raw = el.get(attr.strip()) if attr else el.get_text(" ", strip=True)
+    raw = attr_str(el, attr.strip()) if attr else el.get_text(" ", strip=True)
     price, currency = parse_price(raw or "")
     if price is None:
         return None
-    return Extraction(price=price, currency=currency, method=method,
-                      confidence=confidence, selector=selector, note=f"matched {sel!r}")
+    return Extraction(
+        price=price,
+        currency=currency,
+        method=method,
+        confidence=confidence,
+        selector=selector,
+        note=f"matched {sel!r}",
+    )
 
 
 # --------------------------------------------------------------------------
 # Strategy 2: schema.org JSON-LD - the most reliable signal when present
 # --------------------------------------------------------------------------
-def _walk(node, out: List[dict]) -> None:
+def _walk(node, out: list[dict]) -> None:
     if isinstance(node, dict):
         out.append(node)
         for v in node.values():
@@ -121,22 +228,24 @@ def _walk(node, out: List[dict]) -> None:
             _walk(v, out)
 
 
-def from_jsonld(soup: BeautifulSoup) -> Optional[Extraction]:
-    nodes: List[dict] = []
-    for tag in soup.find_all("script", attrs={"type": re.compile("ld\\+json", re.I)}):
+def from_jsonld(soup: BeautifulSoup) -> Extraction | None:
+    nodes: list[dict] = []
+    for tag in soup.find_all(
+        "script", attrs={"type": re.compile("ld\\+json", re.IGNORECASE)}
+    ):
         raw = tag.string or tag.get_text() or ""
         try:
             _walk(json.loads(raw), nodes)
         except (json.JSONDecodeError, TypeError):
             # Some sites emit several concatenated JSON objects or trailing commas.
-            for chunk in re.findall(r"\{.*\}", raw, re.S):
+            for chunk in re.findall(r"\{.*\}", raw, re.DOTALL):
                 try:
                     _walk(json.loads(chunk), nodes)
-                except Exception:
+                except (json.JSONDecodeError, TypeError):
                     continue
 
-    best: Optional[Extraction] = None
-    name: Optional[str] = None
+    best: Extraction | None = None
+    name: str | None = None
     for node in nodes:
         types = node.get("@type") or node.get("type") or ""
         types = " ".join(types) if isinstance(types, list) else str(types)
@@ -144,7 +253,11 @@ def from_jsonld(soup: BeautifulSoup) -> Optional[Extraction]:
             name = name or node["name"][:200]
 
         price_val = node.get("price", node.get("lowPrice", node.get("highPrice")))
-        if price_val is None and "Offer" not in types and "PriceSpecification" not in types:
+        if (
+            price_val is None
+            and "Offer" not in types
+            and "PriceSpecification" not in types
+        ):
             continue
         if price_val is None:
             continue
@@ -153,11 +266,21 @@ def from_jsonld(soup: BeautifulSoup) -> Optional[Extraction]:
             continue
         currency = node.get("priceCurrency") or cur
         avail = str(node.get("availability", "")).lower()
-        in_stock = True if "instock" in avail else (False if avail and "outofstock" in avail else None)
-        cand = Extraction(price=price, currency=currency, in_stock=in_stock,
-                          method="jsonld", confidence=0.9, note="schema.org JSON-LD")
+        in_stock = (
+            True
+            if "instock" in avail
+            else (False if avail and "outofstock" in avail else None)
+        )
+        cand = Extraction(
+            price=price,
+            currency=currency,
+            in_stock=in_stock,
+            method="jsonld",
+            confidence=0.9,
+            note="schema.org JSON-LD",
+        )
         if best is None or (cand.price or 0) < (best.price or 0):
-            best = cand      # multiple offers -> the buyable one is the lowest
+            best = cand  # multiple offers -> the buyable one is the lowest
     if best and name:
         best.title = name
     return best
@@ -166,18 +289,32 @@ def from_jsonld(soup: BeautifulSoup) -> Optional[Extraction]:
 # --------------------------------------------------------------------------
 # Strategy 3: microdata / RDFa itemprops
 # --------------------------------------------------------------------------
-def from_microdata(soup: BeautifulSoup) -> Optional[Extraction]:
-    for sel in ('[itemprop="price"]', '[itemprop="lowPrice"]',
-                '[property="product:price:amount"]', '[itemprop="priceSpecification"]'):
+def from_microdata(soup: BeautifulSoup) -> Extraction | None:
+    for sel in (
+        '[itemprop="price"]',
+        '[itemprop="lowPrice"]',
+        '[property="product:price:amount"]',
+        '[itemprop="priceSpecification"]',
+    ):
         for el in soup.select(sel):
-            raw = el.get("content") or el.get("value") or el.get_text(" ", strip=True)
+            raw = (
+                attr_str(el, "content")
+                or attr_str(el, "value")
+                or el.get_text(" ", strip=True)
+            )
             price, cur = parse_price(raw or "")
             if price is None:
                 continue
             cur_el = soup.select_one('[itemprop="priceCurrency"]')
-            currency = (cur_el.get("content") if cur_el else None) or cur
-            return Extraction(price=price, currency=currency, method="microdata",
-                              confidence=0.8, selector=sel, note="itemprop")
+            currency = (attr_str(cur_el, "content") if cur_el else None) or cur
+            return Extraction(
+                price=price,
+                currency=currency,
+                method="microdata",
+                confidence=0.8,
+                selector=sel,
+                note="itemprop",
+            )
     return None
 
 
@@ -196,21 +333,29 @@ META_CURRENCY = [
 ]
 
 
-def from_meta(soup: BeautifulSoup) -> Optional[Extraction]:
+def from_meta(soup: BeautifulSoup) -> Extraction | None:
     currency = None
     for sel, attr in META_CURRENCY:
         el = soup.select_one(sel)
-        if el and el.get(attr):
-            currency = el[attr].strip().upper()
+        value = attr_str(el, attr) if el else None
+        if value:
+            currency = value.strip().upper()
             break
     for sel, attr in META_PRICE:
         el = soup.select_one(sel)
-        if not el or not el.get(attr):
+        value = attr_str(el, attr) if el else None
+        if not value:
             continue
-        price, cur = parse_price(el[attr])
+        price, cur = parse_price(value)
         if price is not None:
-            return Extraction(price=price, currency=currency or cur, method="meta",
-                              confidence=0.75, selector=f"{sel}@{attr}", note="meta tag")
+            return Extraction(
+                price=price,
+                currency=currency or cur,
+                method="meta",
+                confidence=0.75,
+                selector=f"{sel}@{attr}",
+                note="meta tag",
+            )
     return None
 
 
@@ -219,12 +364,13 @@ def from_meta(soup: BeautifulSoup) -> Optional[Extraction]:
 # --------------------------------------------------------------------------
 def _css_path(el) -> str:
     """A short, reusable selector for an element."""
-    ident = el.get("id")
+    ident = attr_str(el, "id")
     if ident and re.fullmatch(r"[A-Za-z][\w-]*", ident):
         return f"#{ident}"
     for attr in ("data-testid", "data-test", "data-qa", "itemprop"):
-        if el.get(attr):
-            return f'{el.name}[{attr}="{el[attr]}"]'
+        value = attr_str(el, attr)
+        if value:
+            return f'{el.name}[{attr}="{value}"]'
     classes = [c for c in (el.get("class") or []) if re.fullmatch(r"[A-Za-z][\w-]*", c)]
     if classes:
         return el.name + "".join(f".{c}" for c in classes[:3])
@@ -239,9 +385,14 @@ def _region_score(el) -> float:
         if node.name in ("aside", "nav", "footer", "header"):
             delta -= 0.30
         if node.name == "li":
-            delta -= 0.15          # a price inside a list item is usually a card
-        ident = " ".join([" ".join(node.get("class") or []), node.get("id") or "",
-                          node.get("itemtype") or ""]).lower()
+            delta -= 0.15  # a price inside a list item is usually a card
+        ident = " ".join(
+            [
+                attr_str(node, "class") or "",
+                attr_str(node, "id") or "",
+                attr_str(node, "itemtype") or "",
+            ]
+        ).lower()
         if any(h in ident for h in ASIDE_REGION_HINTS):
             delta -= 0.35
         if any(h in ident for h in MAIN_REGION_HINTS):
@@ -250,18 +401,41 @@ def _region_score(el) -> float:
     return max(-0.5, min(delta, 0.25))
 
 
-def from_heuristics(soup: BeautifulSoup) -> List[Extraction]:
-    out: List[Extraction] = []
+def from_heuristics(soup: BeautifulSoup) -> list[Extraction]:
+    out: list[Extraction] = []
     order = 0
-    for el in soup.find_all(["span", "div", "p", "b", "strong", "ins", "bdi", "h1", "h2", "h3", "td", "meta"]):
+    for el in soup.find_all(
+        [
+            "span",
+            "div",
+            "p",
+            "b",
+            "strong",
+            "ins",
+            "bdi",
+            "h1",
+            "h2",
+            "h3",
+            "td",
+            "meta",
+        ]
+    ):
         attrs = " ".join(
-            [" ".join(el.get("class") or []), el.get("id") or "",
-             el.get("data-testid") or "", el.get("itemprop") or ""]
+            [
+                attr_str(el, "class") or "",
+                attr_str(el, "id") or "",
+                attr_str(el, "data-testid") or "",
+                attr_str(el, "itemprop") or "",
+            ]
         ).lower()
         if not any(h in attrs for h in GOOD_HINTS):
             continue
 
-        text = el.get("content") if el.name == "meta" else el.get_text(" ", strip=True)
+        text = (
+            attr_str(el, "content")
+            if el.name == "meta"
+            else el.get_text(" ", strip=True)
+        )
         if not text or len(text) > 40:
             continue
         price, currency = parse_price(text)
@@ -283,23 +457,33 @@ def from_heuristics(soup: BeautifulSoup) -> List[Extraction]:
         # Tiny document-order nudge: the real price almost always appears
         # before the recommendations.
         score -= min(order, 50) * 0.001
-        out.append(Extraction(price=price, currency=currency, method="heuristic",
-                              confidence=max(0.05, min(score, 0.72)),
-                              selector=_css_path(el), note=f"text {text!r}"))
+        out.append(
+            Extraction(
+                price=price,
+                currency=currency,
+                method="heuristic",
+                confidence=max(0.05, min(score, 0.72)),
+                selector=_css_path(el),
+                note=f"text {text!r}",
+            )
+        )
 
     out.sort(key=lambda e: (-e.confidence, e.price or 0))
     return out[:8]
 
 
 # --------------------------------------------------------------------------
-def extract(html: str, selector: Optional[str] = None,
-            learned_selector: Optional[str] = None) -> Tuple[Extraction, List[Extraction]]:
+def extract(
+    html: str, selector: str | None = None, learned_selector: str | None = None
+) -> tuple[Extraction, list[Extraction]]:
     """Run every deterministic strategy; return (best, all candidates)."""
     soup = _soup(html)
-    candidates: List[Extraction] = []
+    candidates: list[Extraction] = []
 
-    for sel, method, conf in ((selector, "selector", 0.95),
-                              (learned_selector, "learned-selector", 0.85)):
+    for sel, method, conf in (
+        (selector, "selector", 0.95),
+        (learned_selector, "learned-selector", 0.85),
+    ):
         if sel:
             got = from_selector(soup, sel, method=method, confidence=conf)
             if got:
@@ -319,7 +503,9 @@ def extract(html: str, selector: Optional[str] = None,
             c.in_stock = stock
 
     if not candidates:
-        return Extraction(title=title, in_stock=stock, method="none", note="no price found"), []
+        return Extraction(
+            title=title, in_stock=stock, method="none", note="no price found"
+        ), []
 
     candidates.sort(key=lambda e: -e.confidence)
     return candidates[0], candidates
