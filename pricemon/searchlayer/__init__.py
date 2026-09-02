@@ -79,8 +79,16 @@ ENV_KEYS = {
 }
 
 
-def _keys_for(name: str) -> list[str]:
-    """Several keys per provider, comma separated, each with its own ledger."""
+def _keys_for(name: str, settings: dict | None = None) -> list[str]:
+    """Where a provider's key comes from, config first.
+
+    Config beats the environment because it is the only place that reaches
+    every way the agent runs: a .app bundle and a cron job both start without
+    your shell. Several keys, comma separated, each get their own ledger entry.
+    """
+    configured = ((settings or {}).get(name) or {}).get("api_key")
+    if configured:
+        return [k.strip() for k in str(configured).split(",") if k.strip()]
     for env_name in ENV_KEYS.get(name, ()):
         raw = os.environ.get(env_name)
         if raw:
@@ -118,14 +126,28 @@ def build_router(
 
     providers, configs = [], {}
     for name, cls in classes.items():
-        options = {**DEFAULTS.get(name, {}), **(settings.get(name) or {})}
+        overrides = {
+            k: v
+            for k, v in (settings.get(name) or {}).items()
+            if k not in ("api_key", "engine_id", "endpoint") and v is not None
+        }
+        options = {**DEFAULTS.get(name, {}), **overrides}
         if options.pop("enabled", True) is False:
             continue
+        # Google's engine id is not a secret, so it rides in the endpoint slot.
+        engine_id = options.pop("engine_id", None) or (
+            (settings.get(name) or {}).get("engine_id")
+        )
+        endpoint = (
+            options.pop("endpoint", None)
+            or (settings.get(name) or {}).get("endpoint")
+            or (f"cx:{engine_id}" if engine_id else None)
+            or os.environ.get(f"{name.upper()}_ENDPOINT")
+        )
         config = ProviderConfig(
             name=name,
-            api_keys=options.pop("api_keys", None) or _keys_for(name),
-            endpoint=options.pop("endpoint", None)
-            or os.environ.get(f"{name.upper()}_ENDPOINT"),
+            api_keys=options.pop("api_keys", None) or _keys_for(name, settings),
+            endpoint=endpoint,
             **options,
         )
         provider = cls(config)
@@ -163,6 +185,8 @@ def provider_status(settings: dict | None = None) -> list[tuple[str, bool, str]]
             note = "last resort only" if defaults.get("last_resort") else "ready"
             out.append((name, True, note))
         else:
-            env = " or ".join(ENV_KEYS.get(name, ("endpoint",)))
-            out.append((name, False, f"set {env}"))
+            where = "search." + name + ".api_key in config.yaml"
+            if name == "searxng":
+                where = "search.searxng.endpoint in config.yaml"
+            out.append((name, False, f"set {where}"))
     return out

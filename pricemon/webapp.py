@@ -168,6 +168,7 @@ SECRET_FIELDS = (
     ("telegram", "bot_token"),
     ("email", "password"),
 )
+SEARCH_SECRETS = ("brave", "tavily", "exa", "google_pse")
 
 
 def _settings_payload() -> dict:
@@ -193,7 +194,28 @@ def _settings_payload() -> dict:
             "respect_robots": cfg["fetch"].get("respect_robots"),
         },
         "llm": {"backend": cfg["llm"].get("backend"), "model": cfg["llm"].get("model")},
+        "search": _search_payload(cfg),
         "home": str(config_mod.home()),
+    }
+
+
+def _search_payload(cfg: dict) -> dict:
+    """Search provider settings, with keys masked and status attached."""
+    from .searchlayer import provider_status
+
+    section = json.loads(json.dumps(cfg.get("search") or {}))
+    for name in SEARCH_SECRETS:
+        holder = section.get(name) or {}
+        if isinstance(holder, dict) and holder.get("api_key"):
+            holder["api_key"] = MASK
+        section[name] = holder
+    section.setdefault("searxng", {})
+    return {
+        "providers": section,
+        "status": [
+            {"name": name, "ready": ready, "note": note}
+            for name, ready, note in provider_status(cfg.get("search"))
+        ],
     }
 
 
@@ -202,7 +224,7 @@ def _apply_settings(body: dict) -> dict:
     cfg = config_mod.load()
     incoming = body or {}
 
-    for group in ("notify", "alerts", "fetch", "llm"):
+    for group in ("notify", "alerts", "fetch", "llm", "search"):
         section = incoming.get(group)
         if not isinstance(section, dict):
             continue
@@ -218,6 +240,10 @@ def _apply_settings(body: dict) -> dict:
                 cfg[group][key] = _clean(value)
 
     config_mod.save(cfg)
+    # A new key should work on the next search, not the next restart.
+    from .search import reset_router
+
+    reset_router()
     return _settings_payload()
 
 

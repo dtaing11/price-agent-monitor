@@ -789,7 +789,7 @@ const setVal = (id, v) => { $(id).value = v == null ? "" : String(v); };
 const setChecked = (id, v) => { $(id).checked = Boolean(v); };
 
 function showPane(pane) {
-  ["alerts", "schedule", "rules"].forEach((name) => {
+  ["alerts", "schedule", "search", "rules"].forEach((name) => {
     $(`#pane-${name}`).hidden = name !== pane;
   });
   [...$("#settings-tabs").children].forEach((b) => b.classList.toggle("on", b.dataset.pane === pane));
@@ -816,6 +816,19 @@ async function openSettings() {
   setVal("#s-mail-to", mail.to);
   setVal("#s-mail-from", mail.from);
   setVal("#s-webhook", n.webhook_url);
+
+  const providers = (cfg.search && cfg.search.providers) || {};
+  setVal("#s-brave", (providers.brave || {}).api_key);
+  setVal("#s-tavily", (providers.tavily || {}).api_key);
+  setVal("#s-exa", (providers.exa || {}).api_key);
+  setVal("#s-gkey", (providers.google_pse || {}).api_key);
+  setVal("#s-gcx", (providers.google_pse || {}).engine_id);
+  setVal("#s-searxng", (providers.searxng || {}).endpoint);
+  const status = (cfg.search && cfg.search.status) || [];
+  const ready = status.filter((p) => p.ready).map((p) => p.name);
+  $("#search-status").textContent = ready.length
+    ? `Searching with: ${ready.join(", ")}`
+    : "No search provider configured.";
 
   const a = cfg.alerts || {}, f = cfg.fetch || {};
   setVal("#s-drop", a.drop_pct);
@@ -869,6 +882,13 @@ async function saveSettings() {
       implausible_pct: Number(val("#s-implausible")) || 0,
       notify_price_rise: $("#s-rise").checked,
       notify_stock_change: $("#s-stock").checked,
+    },
+    search: {
+      brave: { api_key: val("#s-brave") },
+      tavily: { api_key: val("#s-tavily") },
+      exa: { api_key: val("#s-exa") },
+      google_pse: { api_key: val("#s-gkey"), engine_id: val("#s-gcx") },
+      searxng: { endpoint: val("#s-searxng") },
     },
     fetch: {
       workers: Number(val("#s-workers")) || 6,

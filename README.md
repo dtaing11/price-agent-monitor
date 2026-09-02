@@ -213,12 +213,26 @@ are chosen by remaining budget; and two rate limits open a circuit. When
 everything is genuinely spent you get stale results or a clear error carrying
 the earliest reset.
 
-Configure any of Brave, Tavily, Exa, Google Programmable Search or a
-self-hosted SearXNG with an environment variable:
+**Adding a key.** In the app: ⚙ → **Search** → paste it → Save. That writes it
+to `~/.price-monitor/config.yaml`, which is the one place that reaches every
+way the agent runs — the app, cron runs and the command line alike. An
+environment variable works for the CLI only: a `.app` bundle and a cron job
+both start without your shell's environment.
+
+By hand, the same thing:
+
+```yaml
+search:
+  brave:
+    api_key: BSA...        # brave.com/search/api — free, no card, 2k/month
+  tavily:
+    api_key: null
+  searxng:
+    endpoint: null         # if you run your own
+```
 
 ```bash
-export BRAVE_SEARCH_API_KEY=...     # or TAVILY_API_KEY, EXA_API_KEY, ...
-pricemon config                     # shows which providers are ready
+pricemon config            # shows which providers are ready
 ```
 
 DuckDuckGo works with no key and is used as a **last resort only** — it has no

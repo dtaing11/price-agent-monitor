@@ -34,6 +34,16 @@ DEFAULTS: dict[str, Any] = {
         # never | auto | always. Needs playwright installed.
         "browser": "auto",
     },
+    # Web search providers. A key here works everywhere - the app, cron and the
+    # CLI - which an environment variable does not: a .app bundle and a cron
+    # job both start without your shell's environment.
+    "search": {
+        "brave": {"api_key": None},
+        "tavily": {"api_key": None},
+        "exa": {"api_key": None},
+        "google_pse": {"api_key": None, "engine_id": None},
+        "searxng": {"endpoint": None},
+    },
     "llm": {
         # auto -> claude CLI (your OAuth login) if present, else the API key, else off
         "backend": "auto",  # auto | claude_cli | api | off

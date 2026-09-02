@@ -128,6 +128,7 @@
       <div class="chips" id="settings-tabs" style="margin:14px 0 6px">
         <button type="button" class="chip on" data-pane="alerts">Alerts</button>
         <button type="button" class="chip" data-pane="schedule">Schedule</button>
+        <button type="button" class="chip" data-pane="search">Search</button>
         <button type="button" class="chip" data-pane="rules">Rules</button>
       </div>
 
@@ -214,6 +215,46 @@
         <input type="text" id="s-sched-times" placeholder="08:00,20:00">
         <div class="hint">Comma separated, 24-hour. Runs are silent unless something changed.</div>
         <div class="hint" id="sched-status" style="margin-top:10px"></div>
+      </div>
+
+      <!-- where web search comes from -->
+      <div id="pane-search" hidden>
+        <div class="hint" id="search-status" style="margin:12px 0"></div>
+
+        <label for="s-brave">Brave Search API key <span class="dim">— free tier, 2,000 searches a month</span></label>
+        <input type="password" id="s-brave" placeholder="none">
+        <div class="hint">Get one at <span class="mono">brave.com/search/api</span> — free, no card.</div>
+
+        <div class="row2">
+          <div>
+            <label for="s-tavily">Tavily API key</label>
+            <input type="password" id="s-tavily" placeholder="none">
+          </div>
+          <div>
+            <label for="s-exa">Exa API key</label>
+            <input type="password" id="s-exa" placeholder="none">
+          </div>
+        </div>
+
+        <div class="row2">
+          <div>
+            <label for="s-gkey">Google API key</label>
+            <input type="password" id="s-gkey" placeholder="none">
+          </div>
+          <div>
+            <label for="s-gcx">Google engine id <span class="dim">— the cx value</span></label>
+            <input type="text" id="s-gcx" placeholder="none">
+          </div>
+        </div>
+
+        <label for="s-searxng">SearXNG endpoint <span class="dim">— if you run your own</span></label>
+        <input type="text" id="s-searxng" placeholder="https://searx.example.com">
+
+        <div class="hint" style="margin-top:12px">
+          Keys are stored in your config file, so they work in the app, in cron
+          runs and on the command line alike. Without one the agent falls back
+          to DuckDuckGo, which has no API and throttles under load.
+        </div>
       </div>
 
       <!-- what counts as worth telling you -->

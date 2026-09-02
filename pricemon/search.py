@@ -362,10 +362,17 @@ def _router():
     """One router per process, so its cache and ledger are shared."""
     global _ROUTER
     if _ROUTER is None:
+        from . import config as config_mod
         from .searchlayer import build_router
 
-        _ROUTER = build_router()
+        _ROUTER = build_router(config_mod.load().get("search"))
     return _ROUTER
+
+
+def reset_router() -> None:
+    """Forget the router, so changed settings take effect without a restart."""
+    global _ROUTER
+    _ROUTER = None
 
 
 def _run_async(coro):
