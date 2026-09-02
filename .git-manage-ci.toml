@@ -1,0 +1,22 @@
+# Stack: Python (pricemon package)
+
+[[job]]
+name = "Lint with ruff"
+commands = ["ruff check pricemon/"]
+
+[[job]]
+name = "Format check with ruff"
+commands = ["ruff format --check pricemon/"]
+
+[[job]]
+name = "Type check with mypy"
+commands = ["mypy pricemon/"]
+
+[on_push]
+run = true
+block_on_failure = true
+
+[review]
+run = true
+block_on_failure = true
+fail_on = "high"

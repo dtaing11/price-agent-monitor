@@ -1,0 +1,376 @@
+"""Command line interface: pricemon <command>."""
+
+from __future__ import annotations
+
+import argparse
+import random
+import sys
+import time
+from datetime import datetime
+from pathlib import Path
+from typing import List, Optional
+
+from . import config as config_mod
+from . import cron as cron_mod
+from . import notify
+from .agent import Agent
+from .models import Product
+from .money import format_price
+from .storage import Store
+
+BOLD, DIM, RESET = "\033[1m", "\033[2m", "\033[0m"
+
+
+def _open(args) -> tuple[Store, dict]:
+    config_mod.ensure_home()
+    cfg = config_mod.load()
+    if getattr(args, "model", None):
+        cfg["llm"]["model"] = args.model
+    return Store(config_mod.db_path()), cfg
+
+
+def _slug(url: str, title: Optional[str]) -> str:
+    import re
+    from urllib.parse import urlparse
+    base = title or urlparse(url).path.rstrip("/").split("/")[-1] or urlparse(url).netloc
+    slug = re.sub(r"[^a-z0-9]+", "-", base.lower()).strip("-")
+    return slug[:48] or "product"
+
+
+# --------------------------------------------------------------------------
+def cmd_add(args) -> int:
+    store, cfg = _open(args)
+    agent = Agent(store, cfg, verbose=not args.quiet)
+
+    print(f"Fetching {args.url} ...")
+    try:
+        ex, candidates = agent.scrape(args.url, use_llm=not args.no_llm)
+    except Exception as exc:                              # noqa: BLE001
+        print(f"error: {exc}", file=sys.stderr)
+        if not args.force:
+            return 1
+        ex, candidates = None, []
+
+    name = args.name or _slug(args.url, ex.title if ex else None)
+    if store.get_product(name):
+        print(f"error: a product named {name!r} already exists "
+              f"(pass --name to choose another)", file=sys.stderr)
+        return 1
+
+    if ex and ex.ok:
+        print(f"  found {format_price(ex.price, ex.currency)} via {ex.method} "
+              f"(confidence {ex.confidence:.2f})")
+        if ex.title:
+            print(f"  title: {ex.title}")
+        if len(candidates) > 1 and args.verbose:
+            print("  other candidates:")
+            for c in candidates[1:5]:
+                print(f"    {c.method:16} {format_price(c.price, c.currency):>12}  {c.selector or ''}")
+    elif not args.force:
+        print("error: no price found. Re-run with --selector 'css.selector' or --force.",
+              file=sys.stderr)
+        return 1
+
+    p = Product(
+        name=name, url=args.url, selector=args.selector,
+        learned_selector=(ex.selector if ex and ex.method in ("llm", "heuristic") else None),
+        target_price=args.target,
+        currency=(ex.currency if ex else None),
+        notes=args.notes or "",
+        last_price=(ex.price if ex and ex.ok else None),
+        last_in_stock=(ex.in_stock if ex else None),
+    )
+    store.add_product(p)
+    if ex and ex.ok:
+        store.record(p, ex)
+    target = f", target {format_price(args.target, p.currency)}" if args.target else ""
+    print(f"{BOLD}watching{RESET} {name}{target}")
+    return 0
+
+
+def cmd_list(args) -> int:
+    store, cfg = _open(args)
+    products = store.list_products()
+    if not products:
+        print("nothing watched yet - add one with:  pricemon add <url> --target 99")
+        return 0
+
+    print(f"{BOLD}{'NAME':<28} {'PRICE':>12} {'TARGET':>10}  {'STOCK':<6} {'CHECKED':<17}{RESET}")
+    for p in products:
+        stats = store.price_stats(p)
+        lo = f" low {format_price(stats['lo'], p.currency)}" if stats and stats["n"] else ""
+        stock = "-" if p.last_in_stock is None else ("yes" if p.last_in_stock else "NO")
+        checked = (p.last_checked or "never")[:16].replace("T", " ")
+        flag = "" if p.active else " (paused)"
+        hit = p.target_price is not None and p.last_price is not None and p.last_price <= p.target_price
+        mark = " 🎯" if hit else ""
+        print(f"{p.name[:28]:<28} {format_price(p.last_price, p.currency):>12} "
+              f"{format_price(p.target_price, p.currency) if p.target_price else '-':>10}  "
+              f"{stock:<6} {checked:<17}{DIM}{lo}{flag}{RESET}{mark}")
+    return 0
+
+
+def cmd_check(args) -> int:
+    store, cfg = _open(args)
+    agent = Agent(store, cfg, verbose=not args.quiet)
+    if not args.quiet:
+        print(f"{DIM}LLM fallback: {agent.llm.describe()}{RESET}")
+
+    results = agent.check_all(names=args.names or None, use_llm=not args.no_llm)
+    if not results:
+        print("nothing to check")
+        return 0
+
+    alerts = [a for r in results for a in r.alerts]
+    failed = [r for r in results if r.error]
+    if args.quiet and alerts:
+        # cron mode: stay silent unless something actually happened
+        for a in alerts:
+            print(f"{datetime.now():%Y-%m-%d %H:%M} {a.kind}: {a.message}")
+    if not args.quiet:
+        print(f"\n{len(results)} checked · {len(alerts)} alert(s) · {len(failed)} failed")
+    return 1 if failed and len(failed) == len(results) else 0
+
+
+def cmd_watch(args) -> int:
+    store, cfg = _open(args)
+    agent = Agent(store, cfg, verbose=True)
+    print(f"watching every {args.interval}s - ctrl-c to stop")
+    try:
+        while True:
+            print(f"\n{BOLD}=== {datetime.now():%Y-%m-%d %H:%M:%S} ==={RESET}")
+            agent.check_all(use_llm=not args.no_llm)
+            jitter = random.uniform(0, args.interval * 0.1)
+            time.sleep(args.interval + jitter)
+    except KeyboardInterrupt:
+        print("\nstopped")
+    return 0
+
+
+def cmd_history(args) -> int:
+    store, cfg = _open(args)
+    p = store.get_product(args.name)
+    if not p:
+        print(f"no product named {args.name!r}", file=sys.stderr)
+        return 1
+    rows = store.history(p, limit=args.limit)
+    if not rows:
+        print("no observations yet")
+        return 0
+
+    prices = [r["price"] for r in rows if r["price"] is not None]
+    lo, hi = (min(prices), max(prices)) if prices else (0, 0)
+    print(f"{BOLD}{p.name}{RESET}  {p.url}")
+    for r in rows:
+        ts = r["ts"][:16].replace("T", " ")
+        if r["price"] is None:
+            print(f"{ts}  {'—':>12}  {DIM}{(r['error'] or 'no price')[:60]}{RESET}")
+            continue
+        width = 28
+        pos = 0 if hi == lo else int((r["price"] - lo) / (hi - lo) * (width - 1))
+        bar = " " * pos + "●" + " " * (width - pos - 1)
+        stock = "" if r["in_stock"] is None else ("" if r["in_stock"] else " OUT")
+        print(f"{ts}  {format_price(r['price'], r['currency'] or p.currency):>12}  "
+              f"{DIM}|{bar}|{RESET} {r['method']}{stock}")
+    if prices:
+        print(f"\nlow {format_price(lo, p.currency)} · high {format_price(hi, p.currency)} "
+              f"· avg {format_price(sum(prices)/len(prices), p.currency)} · {len(prices)} points")
+    return 0
+
+
+def cmd_alerts(args) -> int:
+    store, cfg = _open(args)
+    rows = store.recent_alerts(limit=args.limit)
+    if not rows:
+        print("no alerts recorded yet")
+        return 0
+    for r in rows:
+        print(f"{r['ts'][:16].replace('T', ' ')}  {notify.ICONS.get(r['kind'], '•')} {r['message']}")
+    return 0
+
+
+def cmd_remove(args) -> int:
+    store, cfg = _open(args)
+    print(f"removed {args.name}" if store.remove_product(args.name)
+          else f"no product named {args.name!r}")
+    return 0
+
+
+def cmd_set(args) -> int:
+    store, cfg = _open(args)
+    p = store.get_product(args.name)
+    if not p:
+        print(f"no product named {args.name!r}", file=sys.stderr)
+        return 1
+    if args.target is not None:
+        p.target_price = None if args.target < 0 else args.target
+    if args.selector is not None:
+        p.selector = args.selector or None
+        p.learned_selector = None
+    if args.url:
+        p.url = args.url
+    if args.pause:
+        p.active = False
+    if args.resume:
+        p.active = True
+    store.update_product(p)
+    print(f"updated {p.name}: target={format_price(p.target_price, p.currency)} "
+          f"selector={p.selector or p.learned_selector or 'auto'} "
+          f"{'active' if p.active else 'paused'}")
+    return 0
+
+
+def cmd_config(args) -> int:
+    config_mod.ensure_home()
+    cfg = config_mod.load()
+    from .llm import LLM
+    print(f"config : {config_mod.config_path()}")
+    print(f"database: {config_mod.db_path()}")
+    print(f"llm     : {LLM(cfg['llm']).describe()}")
+    print(f"alerts  : drop >= {cfg['alerts']['drop_pct']}% · "
+          f"desktop={cfg['notify']['desktop']} webhook={bool(cfg['notify']['webhook_url'])} "
+          f"email={bool(cfg['notify']['email'])}")
+    return 0
+
+
+def cmd_test_notify(args) -> int:
+    config_mod.ensure_home()
+    notify.test(config_mod.load()["notify"])
+    print("sent a test alert through every configured channel")
+    return 0
+
+
+def cmd_install_cron(args) -> int:
+    config_mod.ensure_home()
+    times = cron_mod.parse_times(args.times)
+    project_dir = Path(__file__).resolve().parent.parent
+    log_file = config_mod.home() / "cron.log"
+    lines = cron_mod.build_lines(times, project_dir, log_file)
+
+    if args.dry_run:
+        print(cron_mod.render_block(lines))
+        return 0
+    block = cron_mod.install(times, project_dir, log_file)
+    print(f"{BOLD}installed{RESET} {len(times)} cron entries:")
+    print(block)
+    print(f"\nlog: {log_file}")
+    print("verify with:  crontab -l")
+    return 0
+
+
+def cmd_uninstall_cron(args) -> int:
+    print("removed pricemon cron entries" if cron_mod.uninstall()
+          else "no pricemon cron entries found")
+    return 0
+
+
+def cmd_report(args) -> int:
+    from .report import build_report
+    store, cfg = _open(args)
+    out = Path(args.out).expanduser() if args.out else config_mod.home() / "report.html"
+    build_report(store, out)
+    print(f"wrote {out}")
+    return 0
+
+
+def cmd_export(args) -> int:
+    import csv
+    store, cfg = _open(args)
+    out = Path(args.out).expanduser()
+    with out.open("w", newline="") as fh:
+        w = csv.writer(fh)
+        w.writerow(["product", "url", "ts", "price", "currency", "in_stock", "method", "error"])
+        for p in store.list_products():
+            for r in store.history(p, limit=100000):
+                w.writerow([p.name, p.url, r["ts"], r["price"], r["currency"],
+                            r["in_stock"], r["method"], r["error"]])
+    print(f"wrote {out}")
+    return 0
+
+
+# --------------------------------------------------------------------------
+def build_parser() -> argparse.ArgumentParser:
+    ap = argparse.ArgumentParser(
+        prog="pricemon",
+        description="An AI agent that watches product pages and tells you when the price drops.")
+    ap.add_argument("--model", help="override the LLM model for this run (e.g. haiku)")
+    sub = ap.add_subparsers(dest="command", required=True)
+
+    a = sub.add_parser("add", help="start watching a product page")
+    a.add_argument("url")
+    a.add_argument("--name", help="short name (default: derived from the page title)")
+    a.add_argument("--target", type=float, help="alert when the price reaches this or lower")
+    a.add_argument("--selector", help="pin a CSS selector, e.g. 'span.price' or 'meta[itemprop=price]@content'")
+    a.add_argument("--notes", default="")
+    a.add_argument("--no-llm", action="store_true", help="deterministic extraction only")
+    a.add_argument("--force", action="store_true", help="add even if no price was found")
+    a.add_argument("--verbose", "-v", action="store_true")
+    a.add_argument("--quiet", "-q", action="store_true")
+    a.set_defaults(func=cmd_add)
+
+    a = sub.add_parser("list", help="show everything being watched")
+    a.set_defaults(func=cmd_list)
+
+    a = sub.add_parser("check", help="check prices now and fire alerts")
+    a.add_argument("names", nargs="*", help="limit to these products")
+    a.add_argument("--no-llm", action="store_true")
+    a.add_argument("--quiet", "-q", action="store_true", help="only print alerts (use this in cron)")
+    a.set_defaults(func=cmd_check)
+
+    a = sub.add_parser("watch", help="keep checking on an interval in the foreground")
+    a.add_argument("--interval", type=int, default=3600, help="seconds between rounds (default 3600)")
+    a.add_argument("--no-llm", action="store_true")
+    a.set_defaults(func=cmd_watch)
+
+    a = sub.add_parser("history", help="price history for one product")
+    a.add_argument("name")
+    a.add_argument("--limit", type=int, default=40)
+    a.set_defaults(func=cmd_history)
+
+    a = sub.add_parser("alerts", help="recent alerts")
+    a.add_argument("--limit", type=int, default=20)
+    a.set_defaults(func=cmd_alerts)
+
+    a = sub.add_parser("remove", help="stop watching a product")
+    a.add_argument("name")
+    a.set_defaults(func=cmd_remove)
+
+    a = sub.add_parser("set", help="change target price, selector, url or paused state")
+    a.add_argument("name")
+    a.add_argument("--target", type=float, help="new target (negative clears it)")
+    a.add_argument("--selector", help="pin a CSS selector ('' to clear)")
+    a.add_argument("--url")
+    a.add_argument("--pause", action="store_true")
+    a.add_argument("--resume", action="store_true")
+    a.set_defaults(func=cmd_set)
+
+    a = sub.add_parser("config", help="show where things live and how the agent is wired")
+    a.set_defaults(func=cmd_config)
+
+    a = sub.add_parser("test-notify", help="send a test alert through every channel")
+    a.set_defaults(func=cmd_test_notify)
+
+    a = sub.add_parser("install-cron", help="run the agent automatically (default: 08:00 and 20:00)")
+    a.add_argument("--times", default="08:00,20:00", help="comma-separated HH:MM")
+    a.add_argument("--dry-run", action="store_true", help="print the crontab block, change nothing")
+    a.set_defaults(func=cmd_install_cron)
+
+    a = sub.add_parser("uninstall-cron", help="remove the scheduled runs")
+    a.set_defaults(func=cmd_uninstall_cron)
+
+    a = sub.add_parser("report", help="write an HTML dashboard of price history")
+    a.add_argument("--out")
+    a.set_defaults(func=cmd_report)
+
+    a = sub.add_parser("export", help="export all observations to CSV")
+    a.add_argument("out")
+    a.set_defaults(func=cmd_export)
+    return ap
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    args = build_parser().parse_args(argv)
+    try:
+        return args.func(args)
+    except KeyboardInterrupt:
+        return 130
