@@ -19,6 +19,7 @@ class Product:
     url: str
     id: int | None = None
     title: str | None = None  # the product's own name, as the page states it
+    image: str | None = None  # product photo URL, for the list view
     selector: str | None = None  # user-pinned, always tried first
     learned_selector: str | None = None  # discovered by the LLM, self-healing
     target_price: float | None = None
@@ -40,6 +41,7 @@ class Extraction:
     currency: str | None = None
     in_stock: bool | None = None
     title: str | None = None
+    image: str | None = None
     method: str = "none"  # jsonld | microdata | meta | selector | heuristic | llm
     confidence: float = 0.0  # 0..1
     selector: str | None = None

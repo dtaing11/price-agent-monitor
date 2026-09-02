@@ -158,6 +158,22 @@ def page_title(soup: BeautifulSoup) -> str | None:
     return None
 
 
+def page_image(soup: BeautifulSoup) -> str | None:
+    """The product's own photo, so the list looks like what you are buying."""
+    for sel, attr in (
+        ('meta[property="og:image"]', "content"),
+        ('meta[name="twitter:image"]', "content"),
+        ('meta[itemprop="image"]', "content"),
+        ("#landingImage", "src"),
+        ("img[itemprop='image']", "src"),
+    ):
+        el = soup.select_one(sel)
+        value = attr_str(el, attr) if el else None
+        if value and value.startswith(("http://", "https://")):
+            return value[:600]
+    return None
+
+
 def detect_stock(soup: BeautifulSoup, html: str) -> bool | None:
     """True / False / None (unknown)."""
     for el in soup.select('[itemprop="availability"], link[itemprop="availability"]'):
@@ -662,14 +678,20 @@ def extract(
 
     title = page_title(soup)
     stock = detect_stock(soup, html)
+    image = page_image(soup)
     for c in candidates:
         c.title = c.title or title
+        c.image = c.image or image
         if c.in_stock is None:
             c.in_stock = stock
 
     if not candidates:
         return Extraction(
-            title=title, in_stock=stock, method="none", note="no price found"
+            title=title,
+            image=image,
+            in_stock=stock,
+            method="none",
+            note="no price found",
         ), []
 
     candidates.sort(key=lambda e: -e.confidence)

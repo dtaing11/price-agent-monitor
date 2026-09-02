@@ -225,6 +225,7 @@ class Agent:
             p.learned_selector = ex.selector
 
         p.title = ex.title or p.title
+        p.image = ex.image or p.image
         p.last_price = ex.price
         p.last_in_stock = ex.in_stock
         p.last_checked = utcnow()
