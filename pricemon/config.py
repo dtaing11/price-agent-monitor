@@ -43,6 +43,13 @@ DEFAULTS: dict[str, Any] = {
     "notify": {
         "console": True,
         "desktop": True,  # macOS notification centre
+        # Phone push. ntfy: pick a topic, subscribe in the ntfy app, put the
+        # same name here. Anyone who knows the topic can publish to it, so
+        # choose something unguessable.
+        "ntfy": {"topic": None, "server": "https://ntfy.sh", "token": None},
+        # Telegram: create a bot with @BotFather, message it once, then read
+        # your chat id from api.telegram.org/bot<token>/getUpdates
+        "telegram": {"bot_token": None, "chat_id": None},
         "webhook_url": None,  # Slack / Discord / any JSON endpoint
         "email": None,  # {host, port, user, password, to, from}
     },

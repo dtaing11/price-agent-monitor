@@ -129,6 +129,10 @@ class Agent:
         alerts: list[Alert] = []
         cur = ex.currency or p.currency
         now = format_price(ex.price, cur)
+        # A notification should say "BILLY Bookcase", not "billy-bookcase-white-80x28x202-cm".
+        label = (p.title or p.name).strip()
+        if len(label) > 62:
+            label = label[:60].rsplit(" ", 1)[0] + "…"
         acfg = self.cfg["alerts"]
 
         if ex.price is not None:
@@ -141,11 +145,13 @@ class Agent:
                 if crossed or new_low:
                     alerts.append(
                         Alert(
+                            url=p.url,
+                            currency=cur,
                             kind="target_hit",
                             product=p.name,
                             price=ex.price,
-                            message=f"{p.name} hit your target: {now} "
-                            f"(target {format_price(p.target_price, cur)}) — {p.url}",
+                            message=f"{label} hit your target: {now} "
+                            f"(target {format_price(p.target_price, cur)})",
                         )
                     )
 
@@ -154,11 +160,13 @@ class Agent:
                 if drop >= float(acfg.get("drop_pct", 5.0)) and not alerts:
                     alerts.append(
                         Alert(
+                            url=p.url,
+                            currency=cur,
                             kind="price_drop",
                             product=p.name,
                             price=ex.price,
-                            message=f"{p.name} dropped {drop:.1f}%: "
-                            f"{format_price(p.last_price, cur)} → {now} — {p.url}",
+                            message=f"{label} dropped {drop:.1f}%: "
+                            f"{format_price(p.last_price, cur)} → {now}",
                         )
                     )
 
@@ -170,10 +178,12 @@ class Agent:
                 rise = (ex.price - p.last_price) / p.last_price * 100
                 alerts.append(
                     Alert(
+                        url=p.url,
+                        currency=cur,
                         kind="price_rise",
                         product=p.name,
                         price=ex.price,
-                        message=f"{p.name} rose {rise:.1f}%: "
+                        message=f"{label} rose {rise:.1f}%: "
                         f"{format_price(p.last_price, cur)} → {now}",
                     )
                 )
@@ -182,19 +192,23 @@ class Agent:
             if p.last_in_stock is False and ex.in_stock is True:
                 alerts.append(
                     Alert(
+                        url=p.url,
+                        currency=cur,
                         kind="back_in_stock",
                         product=p.name,
                         price=ex.price,
-                        message=f"{p.name} is BACK IN STOCK at {now} — {p.url}",
+                        message=f"{label} is back in stock at {now}",
                     )
                 )
             elif p.last_in_stock is True and ex.in_stock is False:
                 alerts.append(
                     Alert(
+                        url=p.url,
+                        currency=cur,
                         kind="out_of_stock",
                         product=p.name,
                         price=ex.price,
-                        message=f"{p.name} went out of stock",
+                        message=f"{label} went out of stock",
                     )
                 )
         return alerts
@@ -258,10 +272,12 @@ class Agent:
         if streak and p.fail_count == streak:
             alerts.append(
                 Alert(
+                    url=p.url,
                     kind="error",
                     product=p.name,
                     price=None,
-                    message=f"{p.name} failed {p.fail_count} checks in a row: {error}",
+                    message=f"{p.title or p.name} failed {p.fail_count} "
+                    f"checks in a row: {error}",
                 )
             )
             self.store.record_alerts(p, alerts)

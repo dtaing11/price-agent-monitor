@@ -54,10 +54,12 @@ class Extraction:
 
 @dataclass
 class Alert:
-    kind: str  # target_hit | price_drop | price_rise | back_in_stock | out_of_stock | error
+    kind: str  # target_hit | price_drop | price_rise | back_in_stock | out_of_stock | error | needs_check
     product: str
     message: str
     price: float | None = None
+    url: str | None = None  # so a phone notification can be tapped through
+    currency: str | None = None
 
 
 @dataclass
